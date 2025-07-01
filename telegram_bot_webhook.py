@@ -583,7 +583,7 @@ def main():
         port=PORT,
         url_path=BOT_TOKEN,
         webhook_url=full_webhook_url,
-        drop_pending_updates=True
+        drop_pending_updates=False  # Set to False to keep pending updates
     )
     
     logger.info(f"Webhook set on {full_webhook_url}")
