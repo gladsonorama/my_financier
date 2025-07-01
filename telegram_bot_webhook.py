@@ -9,7 +9,6 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 # New imports for webhook
-from telegram.ext import Updater, Defaults
 import logging
 from expenses_sqlite import ExpensesSQLite
 import pandas as pd
@@ -19,6 +18,9 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+# Set more verbose logging for debugging
+logging.getLogger('telegram').setLevel(logging.DEBUG)
+logging.getLogger('httpx').setLevel(logging.DEBUG)
 
 # Monkey patch httpx AsyncClient to disable SSL verification
 original_init = httpx.AsyncClient.__init__
@@ -32,8 +34,9 @@ httpx.AsyncClient.__init__ = patched_init
 BOT_TOKEN = os.getenv("TELE_API_KEY")  # Replace with your bot token
 MODEL = "qwen/qwen3-32b"
 # Webhook settings
-PORT = int(os.environ.get("PORT", 8080))
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "")  # Must be configured in environment variables for production
+PORT = int(os.environ.get("PORT", 8443))
+# Update the WEBHOOK_URL to use the primary URL from Render
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "https://my-financier.onrender.com")
 
 from groq import Groq, AsyncGroq
 client = AsyncGroq(
@@ -554,9 +557,9 @@ def start_ollama_if_not_running():
 async def webhook_error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Log the error and send a telegram message to notify the developer."""
     logger.error(f"Exception while handling an update: {context.error}")
-    
-    # Send the error message to the developer if needed
-    # await context.bot.send_message(chat_id=DEVELOPER_CHAT_ID, text=f"An error occurred: {context.error}")
+    # Log more details about the error
+    import traceback
+    logger.error(traceback.format_exc())
 
 def main():
     # Create the Application
@@ -569,15 +572,22 @@ def main():
     # Add error handler
     app.add_error_handler(webhook_error_handler)
     
-    # Set up webhook
+    # Log the webhook URL for debugging
+    webhook_path = f"/{BOT_TOKEN}"
+    full_webhook_url = f"{WEBHOOK_URL}{webhook_path}"
+    logger.info(f"Setting webhook: {full_webhook_url}")
+    
+    # Set up webhook with correct configuration
     app.run_webhook(
         listen="0.0.0.0",
         port=PORT,
         url_path=BOT_TOKEN,
-        webhook_url=f"{WEBHOOK_URL}/{BOT_TOKEN}"
+        webhook_url=full_webhook_url,
+        drop_pending_updates=True
     )
     
-    logger.info(f"Webhook set on {WEBHOOK_URL}")
+    logger.info(f"Webhook set on {full_webhook_url}")
 
 if __name__ == '__main__':
+    logger.info("Starting webhook application...")
     main()
