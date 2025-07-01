@@ -54,6 +54,15 @@ class ExpensesSQLite:
                 )
             ''')
             
+            # Create system settings table for persistent configuration
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS system_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
             conn.commit()
     
     def _normalize_category(self, category: str) -> str:
@@ -284,6 +293,49 @@ class ExpensesSQLite:
             'top_category': df.groupby('category')['amount'].sum().idxmax(),
             'monthly_average': df['amount'].sum() / max(1, df['date'].dt.to_period('M').nunique())
         }
+    
+    # System Settings Management
+    def get_setting(self, key: str, default_value: str = None) -> str:
+        """Get a system setting value"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT value FROM system_settings WHERE key = ?", (key,))
+            row = cursor.fetchone()
+            return row[0] if row else default_value
+    
+    def set_setting(self, key: str, value: str):
+        """Set a system setting value"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT OR REPLACE INTO system_settings (key, value, updated_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+            ''', (key, value))
+            conn.commit()
+    
+    def increment_backup_counter(self) -> int:
+        """Increment and return the backup counter"""
+        current_count = int(self.get_setting('backup_counter', '0'))
+        new_count = current_count + 1
+        self.set_setting('backup_counter', str(new_count))
+        return new_count
+    
+    def reset_backup_counter(self):
+        """Reset the backup counter to 0"""
+        self.set_setting('backup_counter', '0')
+    
+    def get_last_backup_time(self) -> datetime:
+        """Get the last backup timestamp"""
+        timestamp_str = self.get_setting('last_backup_time')
+        if timestamp_str:
+            return datetime.fromisoformat(timestamp_str)
+        return None
+    
+    def set_last_backup_time(self, timestamp: datetime = None):
+        """Set the last backup timestamp"""
+        if timestamp is None:
+            timestamp = datetime.now()
+        self.set_setting('last_backup_time', timestamp.isoformat())
     
     # Additional methods for S3 backup/restore
     def backup_to_file(self, backup_path=None) -> str:

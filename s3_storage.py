@@ -3,7 +3,7 @@ import logging
 import boto3
 from botocore.exceptions import ClientError
 import tempfile
-from datetime import datetime
+from datetime import datetime, timedelta
 import time
 
 logger = logging.getLogger(__name__)
@@ -14,7 +14,9 @@ class S3Storage:
                  aws_access_key_id=None, 
                  aws_secret_access_key=None,
                  region_name=None,
-                 bucket_name=None):
+                 bucket_name=None,
+                 max_backups=96,  # Keep 96 backups (24 hours at 15min intervals)
+                 max_age_days=7):  # Delete backups older than 7 days
         """Initialize S3 storage with credentials from env vars if not provided"""
         
         # Use environment variables if parameters are not provided
@@ -23,6 +25,11 @@ class S3Storage:
         self.aws_secret_access_key = aws_secret_access_key or os.environ.get('S3_SECRET_KEY')
         self.region_name = region_name or os.environ.get('S3_REGION', 'us-east-1')
         self.bucket_name = bucket_name or os.environ.get('S3_BUCKET')
+        
+        # Backup retention settings
+        self.max_backups = int(os.environ.get('S3_MAX_BACKUPS', max_backups))
+        self.max_age_days = int(os.environ.get('S3_MAX_AGE_DAYS', max_age_days))
+        self.cleanup_frequency_minutes = int(os.environ.get('S3_CLEANUP_FREQUENCY_MINUTES', 60))  # Run cleanup every hour
         
         # Create S3 client
         self.s3 = boto3.client(
@@ -36,6 +43,8 @@ class S3Storage:
         
         logger.info("🔷🔷🔷 Initialized S3 storage with endpoint: %s and bucket: %s", 
                    self.endpoint_url or 'AWS Default', self.bucket_name)
+        logger.info("🔷🔷🔷 Backup retention: max %d backups, max %d days, cleanup every %d minutes", 
+                   self.max_backups, self.max_age_days, self.cleanup_frequency_minutes)
     
     def _ensure_bucket_exists(self):
         """Make sure the bucket exists, create it if needed"""
@@ -127,12 +136,101 @@ class S3Storage:
         logger.info("🔷🔷🔷 Found latest backup: %s", latest)
         return latest
     
-    def backup_database(self, db_path):
-        """Backup the database file to S3"""
+    def cleanup_old_backups(self, prefix='expenses_backup_'):
+        """Clean up old backup files based on retention policy"""
+        try:
+            # Get all backup files
+            backups = self.list_files(prefix=prefix)
+            if not backups:
+                logger.info("🔷🔷🔷 No backups found for cleanup")
+                return
+            
+            # Parse backup files with timestamps
+            backup_info = []
+            for backup in backups:
+                try:
+                    # Extract timestamp from filename: expenses_backup_YYYYMMDD_HHMMSS.db
+                    timestamp_str = backup.replace(prefix, '').replace('.db', '')
+                    backup_time = datetime.strptime(timestamp_str, '%Y%m%d_%H%M%S')
+                    backup_info.append({
+                        'name': backup,
+                        'timestamp': backup_time,
+                        'age_days': (datetime.now() - backup_time).days
+                    })
+                except ValueError:
+                    logger.warning("⚠️⚠️⚠️ Could not parse timestamp from backup: %s", backup)
+                    continue
+            
+            if not backup_info:
+                logger.info("🔷🔷🔷 No valid backup files found for cleanup")
+                return
+            
+            # Sort by timestamp (newest first)
+            backup_info.sort(key=lambda x: x['timestamp'], reverse=True)
+            
+            # Determine which backups to delete
+            backups_to_delete = []
+            
+            # Keep only max_backups most recent
+            if len(backup_info) > self.max_backups:
+                backups_to_delete.extend(backup_info[self.max_backups:])
+            
+            # Delete backups older than max_age_days
+            for backup in backup_info:
+                if backup['age_days'] > self.max_age_days and backup not in backups_to_delete:
+                    backups_to_delete.append(backup)
+            
+            # Delete the identified backups
+            deleted_count = 0
+            for backup in backups_to_delete:
+                try:
+                    self.s3.delete_object(Bucket=self.bucket_name, Key=backup['name'])
+                    logger.info("🗑️🗑️🗑️ Deleted old backup: %s (age: %d days)", 
+                              backup['name'], backup['age_days'])
+                    deleted_count += 1
+                except Exception as e:
+                    logger.error("❌❌❌ Failed to delete backup %s: %s", backup['name'], str(e))
+            
+            if deleted_count > 0:
+                logger.info("✅✅✅ Cleanup completed: deleted %d old backups, keeping %d", 
+                          deleted_count, len(backup_info) - deleted_count)
+            else:
+                logger.info("🔷🔷🔷 No backups needed cleanup")
+                
+        except Exception as e:
+            logger.error("❌❌❌ Error during backup cleanup: %s", str(e))
+    
+    def should_run_cleanup(self, db) -> bool:
+        """Check if it's time to run cleanup based on time interval"""
+        last_cleanup_str = db.get_setting('last_cleanup_time')
+        if not last_cleanup_str:
+            return True
+        
+        try:
+            last_cleanup = datetime.fromisoformat(last_cleanup_str)
+            time_since_cleanup = datetime.now() - last_cleanup
+            return time_since_cleanup.total_seconds() >= (self.cleanup_frequency_minutes * 60)
+        except:
+            return True
+    
+    def backup_database(self, db_path, db_instance=None):
+        """Backup the database file to S3 with automatic cleanup"""
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         object_name = f"expenses_backup_{timestamp}.db"
         
-        return self.upload_file(db_path, object_name)
+        success = self.upload_file(db_path, object_name)
+        
+        if success and db_instance:
+            # Update last backup time in database
+            db_instance.set_last_backup_time()
+            
+            # Check if cleanup should run based on time interval
+            if self.should_run_cleanup(db_instance):
+                logger.info("🔷🔷🔷 Running backup cleanup (time-based trigger)")
+                self.cleanup_old_backups()
+                db_instance.set_setting('last_cleanup_time', datetime.now().isoformat())
+        
+        return success
     
     def restore_latest_database(self, target_path):
         """Restore the latest database backup from S3"""
@@ -155,16 +253,16 @@ class S3Storage:
             return False
 
 def backup_db_to_s3(db_path=None):
-    """Utility function to backup the database to S3"""
+    """Utility function to backup the database to S3 with cleanup"""
     from expenses_sqlite import ExpensesSQLite
     
     # Create a temporary backup file
     db = ExpensesSQLite(db_path)
     backup_path = db.backup_to_file()
     
-    # Upload to S3
+    # Upload to S3 with cleanup (pass db instance for persistent tracking)
     s3 = S3Storage()
-    success = s3.upload_file(backup_path, f"expenses_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db")
+    success = s3.backup_database(backup_path, db)
     
     # Clean up temp file
     os.remove(backup_path)

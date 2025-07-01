@@ -71,36 +71,45 @@ if os.environ.get("S3_ENABLED", "false").lower() == "true":
 
 db = ExpensesSQLite(db_path)
 
-# Set up scheduled backups
-last_backup_time = time.time()
-BACKUP_INTERVAL = int(os.environ.get("BACKUP_INTERVAL_SECONDS", 3600))  # Default: 1 hour
+# Set up scheduled backups with 15-minute interval
+BACKUP_INTERVAL = int(os.environ.get("BACKUP_INTERVAL_SECONDS", 900))  # Default: 15 minutes (900 seconds)
+
+def should_backup() -> bool:
+    """Check if it's time to backup based on database-stored timestamp"""
+    last_backup = db.get_last_backup_time()
+    if not last_backup:
+        return True
+    
+    time_since_backup = datetime.now() - last_backup
+    return time_since_backup.total_seconds() >= BACKUP_INTERVAL
 
 def perform_backup():
-    """Backup the database to S3"""
-    global last_backup_time
-    current_time = time.time()
-    
-    # Check if it's time to backup
-    if current_time - last_backup_time >= BACKUP_INTERVAL:
+    """Backup the database to S3 with automatic cleanup"""
+    if should_backup():
         logger.info("🔷🔷🔷 Running scheduled database backup to S3...")
         if os.environ.get("S3_ENABLED", "false").lower() == "true":
             success = backup_db_to_s3(db_path)
             if success:
                 logger.info("✅✅✅ S3 backup successful")
-                last_backup_time = current_time
             else:
                 logger.error("❌❌❌ S3 backup failed")
         else:
             logger.info("🔷🔷🔷 S3 is not enabled, skipping backup")
 
-# Register backup function on exit
-def exit_handler():
-    """Perform final backup on exit"""
-    if os.environ.get("S3_ENABLED", "false").lower() == "true":
-        logger.info("🔷🔷🔷 Performing final backup before exit...")
-        backup_db_to_s3(db_path)
-
-atexit.register(exit_handler)
+# Log process restart detection
+startup_time = datetime.now()
+last_backup = db.get_last_backup_time()
+if last_backup:
+    time_since_last_backup = startup_time - last_backup
+    logger.info("🔷🔷🔷 Process restarted. Last backup was %d minutes ago", 
+               time_since_last_backup.total_seconds() // 60)
+    
+    # If it's been too long since last backup, do one immediately
+    if time_since_last_backup.total_seconds() > BACKUP_INTERVAL:
+        logger.info("🔷🔷🔷 Performing immediate backup due to process restart")
+        perform_backup()
+else:
+    logger.info("🔷🔷🔷 No previous backup found, will backup on first activity")
 
 # Normalize existing data on startup
 db.normalize_existing_data()
@@ -572,11 +581,59 @@ async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if os.environ.get("S3_ENABLED", "false").lower() == "true":
             await update.message.reply_text("Starting database backup...")
             success = backup_db_to_s3(db_path)
-            await update.message.reply_text("Backup " + ("successful" if success else "failed"))
+            
+            # Show backup status with timestamp
+            last_backup = db.get_last_backup_time()
+            status_msg = "Backup " + ("successful" if success else "failed")
+            if last_backup:
+                status_msg += f" at {last_backup.strftime('%H:%M:%S')}"
+            await update.message.reply_text(status_msg)
             return
         else:
             await update.message.reply_text("S3 backup is not enabled")
             return
+    
+    # Add cleanup command for admin users
+    if instruction.startswith("/cleanup") and username == os.environ.get("ADMIN_USERNAME"):
+        if os.environ.get("S3_ENABLED", "false").lower() == "true":
+            await update.message.reply_text("Starting backup cleanup...")
+            s3 = S3Storage()
+            s3.cleanup_old_backups()
+            db.set_setting('last_cleanup_time', datetime.now().isoformat())
+            await update.message.reply_text("Cleanup completed")
+            return
+        else:
+            await update.message.reply_text("S3 backup is not enabled")
+            return
+    
+    # Add status command for admin users
+    if instruction.startswith("/status") and username == os.environ.get("ADMIN_USERNAME"):
+        last_backup = db.get_last_backup_time()
+        last_cleanup = db.get_setting('last_cleanup_time')
+        
+        status_msg = f"🤖 System Status:\n"
+        status_msg += f"📅 Process started: {startup_time.strftime('%H:%M:%S')}\n"
+        
+        if last_backup:
+            minutes_ago = (datetime.now() - last_backup).total_seconds() // 60
+            status_msg += f"💾 Last backup: {last_backup.strftime('%H:%M:%S')} ({int(minutes_ago)}m ago)\n"
+        else:
+            status_msg += "💾 Last backup: Never\n"
+        
+        if last_cleanup:
+            cleanup_time = datetime.fromisoformat(last_cleanup)
+            minutes_ago = (datetime.now() - cleanup_time).total_seconds() // 60
+            status_msg += f"🧹 Last cleanup: {cleanup_time.strftime('%H:%M:%S')} ({int(minutes_ago)}m ago)\n"
+        else:
+            status_msg += "🧹 Last cleanup: Never\n"
+        
+        status_msg += f"⚙️ Backup interval: {BACKUP_INTERVAL // 60} minutes"
+        
+        await update.message.reply_text(status_msg)
+        return
+    
+    # Check if it's time to perform backup (called on each message to ensure regular backups)
+    perform_backup()
     
     # Ensure user exists in database
     if not db.get_user(user_id):
@@ -652,7 +709,13 @@ def main():
     # Log S3 configuration status
     if os.environ.get("S3_ENABLED", "false").lower() == "true":
         logger.info("🔷🔷🔷 S3 storage is enabled with bucket: %s", os.environ.get("S3_BUCKET"))
-        logger.info("🔷🔷🔷 Backup interval: %s seconds", BACKUP_INTERVAL)
+        logger.info("🔷🔷🔷 Backup interval: %s seconds (%s minutes)", 
+                   BACKUP_INTERVAL, BACKUP_INTERVAL // 60)
+        logger.info("🔷🔷🔷 Backup retention: max %s backups, max %s days", 
+                   os.environ.get('S3_MAX_BACKUPS', '96'), 
+                   os.environ.get('S3_MAX_AGE_DAYS', '7'))
+        logger.info("🔷🔷🔷 Cleanup frequency: %s minutes", 
+                   os.environ.get('S3_CLEANUP_FREQUENCY_MINUTES', '60'))
     else:
         logger.warning("⚠️⚠️⚠️ S3 storage is disabled")
 
