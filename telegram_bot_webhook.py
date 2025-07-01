@@ -15,6 +15,8 @@ import pandas as pd
 from s3_storage import S3Storage, backup_db_to_s3, restore_db_from_s3
 import time
 import atexit
+import threading
+import asyncio
 
 # Configure logging
 logging.basicConfig(
@@ -74,6 +76,11 @@ db = ExpensesSQLite(db_path)
 # Set up scheduled backups with 15-minute interval
 BACKUP_INTERVAL = int(os.environ.get("BACKUP_INTERVAL_SECONDS", 900))  # Default: 15 minutes (900 seconds)
 
+# Global backup scheduler variables
+backup_scheduler = None
+backup_lock = threading.Lock()
+pending_backup = False
+
 def should_backup() -> bool:
     """Check if it's time to backup based on database-stored timestamp"""
     last_backup = db.get_last_backup_time()
@@ -83,10 +90,17 @@ def should_backup() -> bool:
     time_since_backup = datetime.now() - last_backup
     return time_since_backup.total_seconds() >= BACKUP_INTERVAL
 
-def perform_backup():
-    """Backup the database to S3 with automatic cleanup"""
-    if should_backup():
+def perform_backup_sync():
+    """Synchronous backup function for background thread"""
+    global pending_backup
+    
+    with backup_lock:
+        if not pending_backup and not should_backup():
+            return
+        
+        pending_backup = False
         logger.info("🔷🔷🔷 Running scheduled database backup to S3...")
+        
         if os.environ.get("S3_ENABLED", "false").lower() == "true":
             success = backup_db_to_s3(db_path)
             if success:
@@ -96,7 +110,56 @@ def perform_backup():
         else:
             logger.info("🔷🔷🔷 S3 is not enabled, skipping backup")
 
-# Log process restart detection
+def trigger_backup():
+    """Trigger an immediate backup (called after data modifications)"""
+    global pending_backup
+    
+    with backup_lock:
+        pending_backup = True
+        logger.info("🔷🔷🔷 Backup triggered due to data modification")
+
+def backup_scheduler_thread():
+    """Background thread that runs backup checks periodically"""
+    logger.info("🔷🔷🔷 Starting backup scheduler thread")
+    
+    while True:
+        try:
+            perform_backup_sync()
+            # Check every 60 seconds, but backup only when needed
+            time.sleep(60)
+        except Exception as e:
+            logger.error("❌❌❌ Error in backup scheduler: %s", str(e))
+            time.sleep(60)
+
+def start_backup_scheduler():
+    """Start the background backup scheduler"""
+    global backup_scheduler
+    
+    if backup_scheduler is None or not backup_scheduler.is_alive():
+        backup_scheduler = threading.Thread(target=backup_scheduler_thread, daemon=True)
+        backup_scheduler.start()
+        logger.info("✅✅✅ Backup scheduler started")
+
+def stop_backup_scheduler():
+    """Stop the background backup scheduler"""
+    global backup_scheduler
+    
+    if backup_scheduler and backup_scheduler.is_alive():
+        logger.info("🔷🔷🔷 Stopping backup scheduler...")
+        # Perform final backup
+        perform_backup_sync()
+
+# Register backup function on exit
+def exit_handler():
+    """Perform final backup on exit"""
+    stop_backup_scheduler()
+    if os.environ.get("S3_ENABLED", "false").lower() == "true":
+        logger.info("🔷🔷🔷 Performing final backup before exit...")
+        backup_db_to_s3(db_path)
+
+atexit.register(exit_handler)
+
+# Log process restart detection and start backup scheduler
 startup_time = datetime.now()
 last_backup = db.get_last_backup_time()
 if last_backup:
@@ -104,12 +167,16 @@ if last_backup:
     logger.info("🔷🔷🔷 Process restarted. Last backup was %d minutes ago", 
                time_since_last_backup.total_seconds() // 60)
     
-    # If it's been too long since last backup, do one immediately
+    # If it's been too long since last backup, trigger one immediately
     if time_since_last_backup.total_seconds() > BACKUP_INTERVAL:
-        logger.info("🔷🔷🔷 Performing immediate backup due to process restart")
-        perform_backup()
+        logger.info("🔷🔷🔷 Triggering immediate backup due to process restart")
+        trigger_backup()
 else:
     logger.info("🔷🔷🔷 No previous backup found, will backup on first activity")
+    trigger_backup()
+
+# Start the background backup scheduler
+start_backup_scheduler()
 
 # Normalize existing data on startup
 db.normalize_existing_data()
@@ -266,6 +333,9 @@ async def execute_tool(tool_name: str, arguments: dict, user_id: str = None) -> 
         if user_id and not db.get_user(user_id):
             db.create_user(user_id)
         
+        # Track if this is a data modification operation
+        is_modification = False
+        
         if tool_name == "add_expense":
             result = db.add_expense(
                 amount=arguments.get("amount"),
@@ -274,7 +344,13 @@ async def execute_tool(tool_name: str, arguments: dict, user_id: str = None) -> 
                 description=arguments.get("description"),
                 user_id=user_id or "telegram_user"
             )
-            return f"✅ Expense added: ₹{result['amount']} for {result['category']} ({result['kakeibo_category']}) - {result['description']}"
+            is_modification = True
+            response = f"✅ Expense added: ₹{result['amount']} for {result['category']} ({result['kakeibo_category']}) - {result['description']}"
+        
+        elif tool_name == "normalize_categories":
+            db.normalize_existing_data()
+            is_modification = True
+            response = "✅ All categories have been normalized to handle case sensitivity"
         
         elif tool_name == "get_monthly_expenses":
             df = db.get_monthly_expenses(
@@ -294,7 +370,7 @@ async def execute_tool(tool_name: str, arguments: dict, user_id: str = None) -> 
             result += "Top Categories:\n"
             for cat, amount in category_totals.items():
                 result += f"• {cat}: ₹{amount:.2f}\n"
-            return result
+            response = result
         
         elif tool_name == "get_category_summary":
             summary = db.get_category_summary(
@@ -312,7 +388,7 @@ async def execute_tool(tool_name: str, arguments: dict, user_id: str = None) -> 
             for category, data in sorted(summary.items(), key=lambda x: x[1]['total'], reverse=True):
                 percentage = (data['total'] / total_amount) * 100
                 result += f"{category}: ₹{data['total']:.2f} ({percentage:.1f}%)\n"
-            return result
+            response = result
         
         elif tool_name == "get_recent_expenses":
             days = arguments.get("days", 7)
@@ -336,7 +412,7 @@ async def execute_tool(tool_name: str, arguments: dict, user_id: str = None) -> 
             for _, row in latest.iterrows():
                 date_str = pd.to_datetime(row['date']).strftime('%m-%d')
                 result += f"• {date_str}: ₹{row['amount']:.2f} - {row['category']}\n"
-            return result
+            response = result
         
         elif tool_name == "get_expense_by_category":
             df = db.get_expenses(
@@ -358,7 +434,7 @@ async def execute_tool(tool_name: str, arguments: dict, user_id: str = None) -> 
             for _, row in recent.iterrows():
                 date_str = pd.to_datetime(row['date']).strftime('%m-%d')
                 result += f"• {date_str}: ₹{row['amount']:.2f} - {row['description']}\n"
-            return result
+            response = result
         
         elif tool_name == "get_kakeibo_summary":
             summary = db.get_kakeibo_summary(
@@ -381,7 +457,7 @@ async def execute_tool(tool_name: str, arguments: dict, user_id: str = None) -> 
                     emoji = {'survival': '🏠', 'optional': '🛍️', 'culture': '📚', 'extra': '⚡'}
                     result += f"{emoji.get(category, '💰')} {category.title()}: ₹{data['total']:.2f} ({percentage:.1f}%)\n"
             
-            return result
+            response = result
         
         elif tool_name == "get_kakeibo_balance_analysis":
             analysis = db.get_kakeibo_balance_analysis(
@@ -403,7 +479,7 @@ async def execute_tool(tool_name: str, arguments: dict, user_id: str = None) -> 
                 result += f"  Recommended: {data['recommended_percentage']:.1f}%\n"
                 result += f"  Status: {status_emoji} {data['variance']:+.1f}%\n\n"
             
-            return result
+            response = result
         
         elif tool_name == "get_top_expenses":
             df = db.get_top_expenses(
@@ -421,7 +497,7 @@ async def execute_tool(tool_name: str, arguments: dict, user_id: str = None) -> 
                 date_str = pd.to_datetime(row['date']).strftime('%m-%d')
                 result += f"• {date_str}: ₹{row['amount']:.2f} - {row['category']} ({row['description']})\n"
             
-            return result
+            response = result
         
         elif tool_name == "get_spending_trends":
             trends = db.get_spending_trends(
@@ -444,14 +520,16 @@ async def execute_tool(tool_name: str, arguments: dict, user_id: str = None) -> 
                 trend_direction = "📈 Increasing" if recent_avg > older_avg else "📉 Decreasing"
                 result += f"\nTrend: {trend_direction}"
             
-            return result
-        
-        elif tool_name == "normalize_categories":
-            db.normalize_existing_data()
-            return "✅ All categories have been normalized to handle case sensitivity"
+            response = result
         
         else:
             return f"Unknown tool: {tool_name}"
+        
+        # Trigger backup if this was a data modification
+        if is_modification:
+            trigger_backup()
+        
+        return response
     
     except Exception as e:
         return f"Error executing {tool_name}: {str(e)}"
@@ -579,14 +657,17 @@ async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Special commands for admin users
     if instruction.startswith("/backup") and username == os.environ.get("ADMIN_USERNAME"):
         if os.environ.get("S3_ENABLED", "false").lower() == "true":
-            await update.message.reply_text("Starting database backup...")
-            success = backup_db_to_s3(db_path)
+            await update.message.reply_text("Starting manual database backup...")
+            trigger_backup()  # Trigger immediate backup
+            
+            # Wait a moment for backup to complete
+            await asyncio.sleep(2)
             
             # Show backup status with timestamp
             last_backup = db.get_last_backup_time()
-            status_msg = "Backup " + ("successful" if success else "failed")
+            status_msg = "Manual backup triggered"
             if last_backup:
-                status_msg += f" at {last_backup.strftime('%H:%M:%S')}"
+                status_msg += f" - Last backup: {last_backup.strftime('%H:%M:%S')}"
             await update.message.reply_text(status_msg)
             return
         else:
@@ -627,13 +708,15 @@ async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             status_msg += "🧹 Last cleanup: Never\n"
         
+        # Show backup scheduler status
+        scheduler_status = "Running" if backup_scheduler and backup_scheduler.is_alive() else "Stopped"
+        status_msg += f"🔄 Backup scheduler: {scheduler_status}\n"
         status_msg += f"⚙️ Backup interval: {BACKUP_INTERVAL // 60} minutes"
         
         await update.message.reply_text(status_msg)
         return
     
-    # Check if it's time to perform backup (called on each message to ensure regular backups)
-    perform_backup()
+    # Remove the old perform_backup() call since we now have background scheduling
     
     # Ensure user exists in database
     if not db.get_user(user_id):
@@ -716,6 +799,7 @@ def main():
                    os.environ.get('S3_MAX_AGE_DAYS', '7'))
         logger.info("🔷🔷🔷 Cleanup frequency: %s minutes", 
                    os.environ.get('S3_CLEANUP_FREQUENCY_MINUTES', '60'))
+        logger.info("🔷🔷🔷 Background backup scheduler: Enabled")
     else:
         logger.warning("⚠️⚠️⚠️ S3 storage is disabled")
 
