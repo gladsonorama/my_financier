@@ -3,10 +3,25 @@ import pandas as pd
 from datetime import datetime
 from typing import Dict, List, Optional
 import os
+import tempfile
+import logging
+
+logger = logging.getLogger(__name__)
 
 class ExpensesSQLite:
     def __init__(self, db_path: str = "expenses.db"):
-        self.db_path = db_path
+        """Initialize the expenses database with an optional custom path"""
+        if db_path:
+            # Check if the path has a directory component
+            dirname = os.path.dirname(db_path)
+            if dirname:  # Only create directories if there's actually a directory path
+                os.makedirs(dirname, exist_ok=True)
+            self.db_path = db_path
+        else:
+            # Default path
+            self.db_path = 'expenses.db'
+        
+        logger.info("🔷🔷🔷 Initializing database at: %s", self.db_path)
         self._init_database()
     
     def _init_database(self):
@@ -131,7 +146,7 @@ class ExpensesSQLite:
         
         if end_date:
             # Add one day to include the end date
-            end_date_plus = pd.to_datetime(end_date) + pd.Timedelta(days=1)
+            end_date_plus = pd.to_datetime(end_date) #+ pd.Timedelta(days=1)
             query += " AND date <= ?"
             params.append(end_date_plus.strftime('%Y-%m-%d'))
         
@@ -270,6 +285,51 @@ class ExpensesSQLite:
             'monthly_average': df['amount'].sum() / max(1, df['date'].dt.to_period('M').nunique())
         }
     
+    # Additional methods for S3 backup/restore
+    def backup_to_file(self, backup_path=None) -> str:
+        """Backup database to a file and return the file path"""
+        if not backup_path:
+            # Create a temp file with timestamp
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            backup_path = f"expenses_backup_{timestamp}.db"
+        
+        try:
+            # Create a copy of the database file
+            import shutil
+            shutil.copy2(self.db_path, backup_path)
+            logger.info("🔷🔷🔷 Database backed up to: %s", backup_path)
+            return backup_path
+        except Exception as e:
+            logger.error("❌❌❌ Database backup failed: %s", str(e))
+            raise
+    
+    def restore_from_file(self, backup_path: str) -> bool:
+        """Restore database from a backup file"""
+        try:
+            # Check if backup file exists
+            if not os.path.exists(backup_path):
+                logger.error("❌❌❌ Backup file not found: %s", backup_path)
+                return False
+            
+            # Close any open connections to current db
+            try:
+                conn = sqlite3.connect(self.db_path)
+                conn.close()
+            except:
+                pass
+            
+            # Replace current db with backup
+            import shutil
+            shutil.copy2(backup_path, self.db_path)
+            
+            # Re-initialize to ensure tables exist
+            self._init_database()
+            logger.info("🔷🔷🔷 Database restored from: %s", backup_path)
+            return True
+        except Exception as e:
+            logger.error("❌❌❌ Database restore failed: %s", str(e))
+            return False
+    
     def normalize_existing_data(self):
         """Normalize all existing category data in the database"""
         with sqlite3.connect(self.db_path) as conn:
@@ -288,7 +348,7 @@ class ExpensesSQLite:
                 )
             
             conn.commit()
-            print("Normalized existing category data")
+            logger.info("🔷🔷🔷 Normalized existing category data")
 
 if __name__ == "__main__":
     db = ExpensesSQLite()
@@ -300,5 +360,5 @@ if __name__ == "__main__":
     db.add_expense(1500, 'groceries', 'Bought vegetables and fruits', 'survival', 'user123')
     db.add_expense(2000, 'entertainment', 'Movie tickets', 'optional', 'user123')
     
-    print("Category Summary:", db.get_category_summary(user_id='user123'))
-    print("User Stats:", db.get_user_stats('user123'))
+    logger.info("Category Summary: %s", db.get_category_summary(user_id='user123'))
+    logger.info("User Stats: %s", db.get_user_stats('user123'))

@@ -12,6 +12,9 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters
 import logging
 from expenses_sqlite import ExpensesSQLite
 import pandas as pd
+from s3_storage import S3Storage, backup_db_to_s3, restore_db_from_s3
+import time
+import atexit
 
 # Configure logging
 logging.basicConfig(
@@ -50,8 +53,54 @@ client = AsyncGroq(
 #     api_key='ollama', # required, but unused
 # )
 
-# Initialize the expenses database
-db = ExpensesSQLite()
+# Initialize the expenses database with S3 backup/restore
+db_path = os.environ.get("DATABASE_PATH", "expenses.db")
+logger.info("🔷🔷🔷 Using database path: %s", db_path)
+
+# Check if we should restore from S3 first (on startup)
+if os.environ.get("S3_ENABLED", "false").lower() == "true":
+    logger.info("🔷🔷🔷 S3 storage is enabled")
+    
+    # Try to restore from S3 first (if available)
+    logger.info("🔷🔷🔷 Attempting to restore database from S3...")
+    restored = restore_db_from_s3(db_path)
+    if restored:
+        logger.info("✅✅✅ Successfully restored database from S3")
+    else:
+        logger.warning("⚠️⚠️⚠️ Could not restore from S3, using local database")
+
+db = ExpensesSQLite(db_path)
+
+# Set up scheduled backups
+last_backup_time = time.time()
+BACKUP_INTERVAL = int(os.environ.get("BACKUP_INTERVAL_SECONDS", 3600))  # Default: 1 hour
+
+def perform_backup():
+    """Backup the database to S3"""
+    global last_backup_time
+    current_time = time.time()
+    
+    # Check if it's time to backup
+    if current_time - last_backup_time >= BACKUP_INTERVAL:
+        logger.info("🔷🔷🔷 Running scheduled database backup to S3...")
+        if os.environ.get("S3_ENABLED", "false").lower() == "true":
+            success = backup_db_to_s3(db_path)
+            if success:
+                logger.info("✅✅✅ S3 backup successful")
+                last_backup_time = current_time
+            else:
+                logger.error("❌❌❌ S3 backup failed")
+        else:
+            logger.info("🔷🔷🔷 S3 is not enabled, skipping backup")
+
+# Register backup function on exit
+def exit_handler():
+    """Perform final backup on exit"""
+    if os.environ.get("S3_ENABLED", "false").lower() == "true":
+        logger.info("🔷🔷🔷 Performing final backup before exit...")
+        backup_db_to_s3(db_path)
+
+atexit.register(exit_handler)
 
 # Normalize existing data on startup
 db.normalize_existing_data()
@@ -518,6 +567,17 @@ async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = update.message.from_user.username or f"user_{update.message.from_user.id}"
     user_id = str(update.message.from_user.id)
     
+    # Special commands for admin users
+    if instruction.startswith("/backup") and username == os.environ.get("ADMIN_USERNAME"):
+        if os.environ.get("S3_ENABLED", "false").lower() == "true":
+            await update.message.reply_text("Starting database backup...")
+            success = backup_db_to_s3(db_path)
+            await update.message.reply_text("Backup " + ("successful" if success else "failed"))
+            return
+        else:
+            await update.message.reply_text("S3 backup is not enabled")
+            return
+    
     # Ensure user exists in database
     if not db.get_user(user_id):
         db.create_user(user_id, f"{username}@telegram.com" if username else None)
@@ -588,6 +648,13 @@ def main():
     )
     
     logger.info("✅✅✅ Webhook set on %s", full_webhook_url)
+
+    # Log S3 configuration status
+    if os.environ.get("S3_ENABLED", "false").lower() == "true":
+        logger.info("🔷🔷🔷 S3 storage is enabled with bucket: %s", os.environ.get("S3_BUCKET"))
+        logger.info("🔷🔷🔷 Backup interval: %s seconds", BACKUP_INTERVAL)
+    else:
+        logger.warning("⚠️⚠️⚠️ S3 storage is disabled")
 
 if __name__ == '__main__':
     logger.info("🚀🚀🚀 Starting webhook application...")
