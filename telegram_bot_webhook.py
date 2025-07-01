@@ -644,79 +644,158 @@ Kakeibo Categories:
 📚 Culture - Self-improvement
 ⚡ Extra - Unexpected expenses
 
+Admin Commands (for authorized users):
+🔧 /backup - Manual backup
+🧹 /cleanup - Clean old backups
+📊 /status - System status
+
 Just tell me what you need!
 """
     await update.message.reply_text(help_text)
+
+async def backup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /backup command for admin users"""
+    username = update.message.from_user.username or f"user_{update.message.from_user.id}"
+    
+    # Check if user is admin
+    if username != os.environ.get("ADMIN_USERNAME"):
+        await update.message.reply_text("❌ You are not authorized to use this command.")
+        return
+    
+    if os.environ.get("S3_ENABLED", "false").lower() == "true":
+        await update.message.reply_text("🔄 Starting manual database backup...")
+        trigger_backup()  # Trigger immediate backup
+        
+        # Wait a moment for backup to complete
+        await asyncio.sleep(3)
+        
+        # Show backup status with timestamp
+        last_backup = db.get_last_backup_time()
+        status_msg = "✅ Manual backup triggered"
+        if last_backup:
+            status_msg += f"\n📅 Last backup: {last_backup.strftime('%Y-%m-%d %H:%M:%S')}"
+        await update.message.reply_text(status_msg)
+    else:
+        await update.message.reply_text("❌ S3 backup is not enabled")
+
+async def cleanup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /cleanup command for admin users"""
+    username = update.message.from_user.username or f"user_{update.message.from_user.id}"
+    
+    # Check if user is admin
+    if username != os.environ.get("ADMIN_USERNAME"):
+        await update.message.reply_text("❌ You are not authorized to use this command.")
+        return
+    
+    if os.environ.get("S3_ENABLED", "false").lower() == "true":
+        await update.message.reply_text("🧹 Starting backup cleanup...")
+        try:
+            s3 = S3Storage()
+            s3.cleanup_old_backups()
+            db.set_setting('last_cleanup_time', datetime.now().isoformat())
+            await update.message.reply_text("✅ Cleanup completed successfully")
+        except Exception as e:
+            logger.error("❌❌❌ Cleanup failed: %s", str(e))
+            await update.message.reply_text(f"❌ Cleanup failed: {str(e)}")
+    else:
+        await update.message.reply_text("❌ S3 backup is not enabled")
+
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /status command for admin users"""
+    username = update.message.from_user.username or f"user_{update.message.from_user.id}"
+    
+    # Check if user is admin
+    if username != os.environ.get("ADMIN_USERNAME"):
+        await update.message.reply_text("❌ You are not authorized to use this command.")
+        return
+    
+    last_backup = db.get_last_backup_time()
+    last_cleanup = db.get_setting('last_cleanup_time')
+    
+    status_msg = f"🤖 **System Status Report**\n\n"
+    status_msg += f"📅 **Process Info:**\n"
+    status_msg += f"   • Started: {startup_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+    status_msg += f"   • Uptime: {((datetime.now() - startup_time).total_seconds() // 60):.0f} minutes\n\n"
+    
+    status_msg += f"💾 **Backup Status:**\n"
+    if last_backup:
+        minutes_ago = (datetime.now() - last_backup).total_seconds() // 60
+        status_msg += f"   • Last backup: {last_backup.strftime('%Y-%m-%d %H:%M:%S')}\n"
+        status_msg += f"   • Time ago: {int(minutes_ago)} minutes\n"
+    else:
+        status_msg += "   • Last backup: Never\n"
+    
+    status_msg += f"🧹 **Cleanup Status:**\n"
+    if last_cleanup:
+        cleanup_time = datetime.fromisoformat(last_cleanup)
+        minutes_ago = (datetime.now() - cleanup_time).total_seconds() // 60
+        status_msg += f"   • Last cleanup: {cleanup_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+        status_msg += f"   • Time ago: {int(minutes_ago)} minutes\n"
+    else:
+        status_msg += "   • Last cleanup: Never\n"
+    
+    # Show backup scheduler status
+    scheduler_status = "🟢 Running" if backup_scheduler and backup_scheduler.is_alive() else "🔴 Stopped"
+    status_msg += f"\n🔄 **Background Services:**\n"
+    status_msg += f"   • Backup scheduler: {scheduler_status}\n"
+    status_msg += f"   • Backup interval: {BACKUP_INTERVAL // 60} minutes\n"
+    
+    # Show S3 configuration
+    if os.environ.get("S3_ENABLED", "false").lower() == "true":
+        status_msg += f"\n☁️ **S3 Configuration:**\n"
+        status_msg += f"   • Bucket: {os.environ.get('S3_BUCKET', 'Not set')}\n"
+        status_msg += f"   • Max backups: {os.environ.get('S3_MAX_BACKUPS', '96')}\n"
+        status_msg += f"   • Max age: {os.environ.get('S3_MAX_AGE_DAYS', '7')} days\n"
+    else:
+        status_msg += f"\n☁️ **S3 Configuration:** ❌ Disabled\n"
+    
+    await update.message.reply_text(status_msg)
+
+async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /logs command for admin users to see recent activity"""
+    username = update.message.from_user.username or f"user_{update.message.from_user.id}"
+    
+    # Check if user is admin
+    if username != os.environ.get("ADMIN_USERNAME"):
+        await update.message.reply_text("❌ You are not authorized to use this command.")
+        return
+    
+    try:
+        # Get recent expenses count and last activity
+        recent_df = db.get_expenses(
+            start_date=(datetime.now() - timedelta(hours=24)).strftime('%Y-%m-%d'),
+            end_date=datetime.now().strftime('%Y-%m-%d')
+        )
+        
+        # Get user count
+        users = db.list_users()
+        
+        logs_msg = f"📊 **Activity Report (Last 24h)**\n\n"
+        logs_msg += f"👥 **Users:** {len(users)} total\n"
+        logs_msg += f"💰 **Transactions:** {len(recent_df)} in last 24h\n"
+        
+        if not recent_df.empty:
+            total_amount = recent_df['amount'].sum()
+            logs_msg += f"💵 **Total amount:** ₹{total_amount:.2f}\n"
+            
+            # Top categories in last 24h
+            if len(recent_df) > 0:
+                top_categories = recent_df.groupby('category')['amount'].sum().sort_values(ascending=False).head(3)
+                logs_msg += f"\n🏷️ **Top Categories:**\n"
+                for cat, amount in top_categories.items():
+                    logs_msg += f"   • {cat}: ₹{amount:.2f}\n"
+        
+        await update.message.reply_text(logs_msg)
+        
+    except Exception as e:
+        logger.error("❌❌❌ Error generating logs: %s", str(e))
+        await update.message.reply_text(f"❌ Error generating logs: {str(e)}")
 
 async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     instruction = update.message.text
     date = update.message.date.strftime("%Y-%m-%d")
     username = update.message.from_user.username or f"user_{update.message.from_user.id}"
     user_id = str(update.message.from_user.id)
-    
-    # Special commands for admin users
-    if instruction.startswith("/backup") and username == os.environ.get("ADMIN_USERNAME"):
-        if os.environ.get("S3_ENABLED", "false").lower() == "true":
-            await update.message.reply_text("Starting manual database backup...")
-            trigger_backup()  # Trigger immediate backup
-            
-            # Wait a moment for backup to complete
-            await asyncio.sleep(2)
-            
-            # Show backup status with timestamp
-            last_backup = db.get_last_backup_time()
-            status_msg = "Manual backup triggered"
-            if last_backup:
-                status_msg += f" - Last backup: {last_backup.strftime('%H:%M:%S')}"
-            await update.message.reply_text(status_msg)
-            return
-        else:
-            await update.message.reply_text("S3 backup is not enabled")
-            return
-    
-    # Add cleanup command for admin users
-    if instruction.startswith("/cleanup") and username == os.environ.get("ADMIN_USERNAME"):
-        if os.environ.get("S3_ENABLED", "false").lower() == "true":
-            await update.message.reply_text("Starting backup cleanup...")
-            s3 = S3Storage()
-            s3.cleanup_old_backups()
-            db.set_setting('last_cleanup_time', datetime.now().isoformat())
-            await update.message.reply_text("Cleanup completed")
-            return
-        else:
-            await update.message.reply_text("S3 backup is not enabled")
-            return
-    
-    # Add status command for admin users
-    if instruction.startswith("/status") and username == os.environ.get("ADMIN_USERNAME"):
-        last_backup = db.get_last_backup_time()
-        last_cleanup = db.get_setting('last_cleanup_time')
-        
-        status_msg = f"🤖 System Status:\n"
-        status_msg += f"📅 Process started: {startup_time.strftime('%H:%M:%S')}\n"
-        
-        if last_backup:
-            minutes_ago = (datetime.now() - last_backup).total_seconds() // 60
-            status_msg += f"💾 Last backup: {last_backup.strftime('%H:%M:%S')} ({int(minutes_ago)}m ago)\n"
-        else:
-            status_msg += "💾 Last backup: Never\n"
-        
-        if last_cleanup:
-            cleanup_time = datetime.fromisoformat(last_cleanup)
-            minutes_ago = (datetime.now() - cleanup_time).total_seconds() // 60
-            status_msg += f"🧹 Last cleanup: {cleanup_time.strftime('%H:%M:%S')} ({int(minutes_ago)}m ago)\n"
-        else:
-            status_msg += "🧹 Last cleanup: Never\n"
-        
-        # Show backup scheduler status
-        scheduler_status = "Running" if backup_scheduler and backup_scheduler.is_alive() else "Stopped"
-        status_msg += f"🔄 Backup scheduler: {scheduler_status}\n"
-        status_msg += f"⚙️ Backup interval: {BACKUP_INTERVAL // 60} minutes"
-        
-        await update.message.reply_text(status_msg)
-        return
-    
-    # Remove the old perform_backup() call since we now have background scheduling
     
     # Ensure user exists in database
     if not db.get_user(user_id):
@@ -729,7 +808,6 @@ async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(response)
     except Exception as e:
         await update.message.reply_text(f"Error: {e}")
-
 
 # def start_ollama_if_not_running():
 #     """Check if Ollama is running, start it if not"""
@@ -766,8 +844,14 @@ def main():
     # Create the Application
     app = Application.builder().token(BOT_TOKEN).build()
     
-    # Add handlers
+    # Add command handlers
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("backup", backup_command))
+    app.add_handler(CommandHandler("cleanup", cleanup_command))
+    app.add_handler(CommandHandler("status", status_command))
+    app.add_handler(CommandHandler("logs", logs_command))
+    
+    # Add message handler for general messages (must be last)
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_command))
     
     # Add error handler
@@ -800,6 +884,7 @@ def main():
         logger.info("🔷🔷🔷 Cleanup frequency: %s minutes", 
                    os.environ.get('S3_CLEANUP_FREQUENCY_MINUTES', '60'))
         logger.info("🔷🔷🔷 Background backup scheduler: Enabled")
+        logger.info("🔷🔷🔷 Admin commands: /backup, /cleanup, /status, /logs")
     else:
         logger.warning("⚠️⚠️⚠️ S3 storage is disabled")
 

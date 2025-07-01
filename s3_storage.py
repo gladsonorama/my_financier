@@ -38,7 +38,7 @@ class S3Storage:
             aws_access_key_id=self.aws_access_key_id,
             aws_secret_access_key=self.aws_secret_access_key,
             region_name=self.region_name,
-            verify=False
+            # verify=False
         )
         
         logger.info("🔷🔷🔷 Initialized S3 storage with endpoint: %s and bucket: %s", 
