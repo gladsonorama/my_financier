@@ -19,8 +19,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 # Set more verbose logging for debugging
-logging.getLogger('telegram').setLevel(logging.DEBUG)
-logging.getLogger('httpx').setLevel(logging.DEBUG)
+# logging.getLogger('telegram').setLevel(logging.DEBUG)
+# logging.getLogger('httpx').setLevel(logging.DEBUG)
 
 # Monkey patch httpx AsyncClient to disable SSL verification
 original_init = httpx.AsyncClient.__init__
@@ -430,7 +430,7 @@ Always use the appropriate tool for user requests. Be helpful and provide clear 
 /no_think
 """
 
-        print(f"Instruction: {prompt}  ")
+        logger.info("🔷🔷🔷 INSTRUCTION: %s 🔷🔷🔷", prompt)
         
         response = await client.chat.completions.create(
             # model="qwen3",
@@ -457,7 +457,7 @@ Always use the appropriate tool for user requests. Be helpful and provide clear 
                 if function_name == "add_expense":
                     generate_report = False
                 
-                print(f"Executing tool: {function_name} with args: {function_args}")
+                logger.info("🛠️🛠️🛠️ Executing tool: %s with args: %s", function_name, function_args)
                 tool_result = await execute_tool(function_name, function_args, user_id)
                 tool_results.append(tool_result)
             if generate_report:
@@ -485,6 +485,7 @@ Always use the appropriate tool for user requests. Be helpful and provide clear 
             return response.choices[0].message.content
         
     except Exception as e:
+        logger.error("❌❌❌ Error calling OpenAI API: %s", e)
         return f"Error calling OpenAI API: {e}"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -530,29 +531,29 @@ async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Error: {e}")
 
 
-def start_ollama_if_not_running():
-    """Check if Ollama is running, start it if not"""
-    try:
-        # Check if Ollama is already running
-        response = requests.get("http://localhost:11434/api/tags", timeout=5.0, verify=False)
-        if response.status_code == 200:
-            print("Ollama is already running")
-            return True
-    except:
-        print("Ollama not running, attempting to start...")
+# def start_ollama_if_not_running():
+#     """Check if Ollama is running, start it if not"""
+#     try:
+#         # Check if Ollama is already running
+#         response = requests.get("http://localhost:11434/api/tags", timeout=5.0, verify=False)
+#         if response.status_code == 200:
+#             logger.info("✅✅✅ Ollama is already running")
+#             return True
+#     except:
+#         logger.warning("⚠️⚠️⚠️ Ollama not running, attempting to start...")
         
-    try:
-        # Start Ollama in the background
-        subprocess.Popen(["ollama", "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        print("Started Ollama service")
+#     try:
+#         # Start Ollama in the background
+#         subprocess.Popen(["ollama", "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+#         logger.info("✅✅✅ Started Ollama service")
         
-        # Wait a moment for it to start up
-        import time
-        time.sleep(3)
-        return True
-    except Exception as e:
-        print(f"Failed to start Ollama: {e}")
-        return False
+#         # Wait a moment for it to start up
+#         import time
+#         time.sleep(3)
+#         return True
+#     except Exception as e:
+#         logger.error("❌❌❌ Failed to start Ollama: %s", e)
+#         return False
 
 async def webhook_error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Log the error and send a telegram message to notify the developer."""
@@ -575,7 +576,7 @@ def main():
     # Log the webhook URL for debugging
     webhook_path = f"/{BOT_TOKEN}"
     full_webhook_url = f"{WEBHOOK_URL}{webhook_path}"
-    logger.info(f"Setting webhook: {full_webhook_url}")
+    logger.info("🚀🚀🚀 Setting webhook: %s", full_webhook_url)
     
     # Set up webhook with correct configuration
     app.run_webhook(
@@ -586,8 +587,8 @@ def main():
         drop_pending_updates=False  # Set to False to keep pending updates
     )
     
-    logger.info(f"Webhook set on {full_webhook_url}")
+    logger.info("✅✅✅ Webhook set on %s", full_webhook_url)
 
 if __name__ == '__main__':
-    logger.info("Starting webhook application...")
+    logger.info("🚀🚀🚀 Starting webhook application...")
     main()
