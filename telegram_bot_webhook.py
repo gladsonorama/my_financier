@@ -617,7 +617,7 @@ Always use the appropriate tool for user requests. Be helpful and provide clear 
                     model=model,
                     messages=[
                         {"role": "system", "content": system_msg_reports},
-                        {"role": "user", "content": "Here are the results of the executed tools:\n" + "\n".join(tool_results)}
+                        {"role": "user", "content": "User asks for: "+prompt+"\nHere are the results of the executed tools:\n" + "\n".join(tool_results)}
                     ],
                     max_tokens=500,
                     temperature=0.7

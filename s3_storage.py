@@ -3,8 +3,8 @@ import logging
 import boto3
 from botocore.exceptions import ClientError
 import tempfile
-from datetime import datetime, timedelta, timezone
-import time
+from datetime import datetime, timedelta, timezone,time
+# import time
 
 logger = logging.getLogger(__name__)
 
@@ -324,13 +324,21 @@ if __name__ == "__main__":
     
     #load latest backup into sql lite
     import sqlite3
+    import pandas as pd
     if latest_backup:
         restore_latest_database = s3.restore_latest_database('expenses.db')
         if restore_latest_database:
             conn = sqlite3.connect('expenses.db')
             ## show current expenses
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM expenses")
+            ## add today's ONLY time delta to end date
+            now = datetime.now()
+            current_time = time(23,59,59)  # Set to end of day
+            end_date =  datetime.combine(pd.to_datetime("2025-07-02").date(), current_time)
+            query = f"SELECT * FROM expenses where date <= \"{end_date}\""
+            print(query)
+            cursor.execute(query)
+            # cursor.execute()
             expenses = cursor.fetchall()
             for expense in expenses:
                 logger.info("Expense: %s", expense)
