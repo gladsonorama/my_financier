@@ -614,6 +614,34 @@ Always use the appropriate tool for user requests. Be helpful and provide clear 
                 1. You are returning a summary to a telegram bot
                 2. Generate charts or tables if relevant
                 3. Generate in html format
+                4. Unsupported tags in telegram: <div>, <p>, <br>, <img>, <ul>
+
+                | Tag                                         | Description     |
+                | ------------------------------------------- | --------------- |
+                | `<div>`                                     | Block container |
+                | `<p>`                                       | Paragraph       |
+                | `<br>`                                      | Line break      |
+                | `<img>`                                     | Image tag       |
+                | `<ul>`, `<ol>`, `<li>`                      | Lists           |
+                | `<h1>` to `<h6>`                            | Headings        |
+                | `<table>`, `<tr>`, `<td>`                   | Tables          |
+                | `<span>` *(without class="tg-spoiler")*     | Inline styling  |
+                | `<blockquote>`                              | Quotes          |
+                | `<hr>`                                      | Horizontal rule |
+                | `<input>`, `<form>`, `<button>`             | Forms           |
+                | `<style>`, `<script>`                       | Scripts & CSS   |
+                | `<iframe>`, `<embed>`, `<video>`, `<audio>` | Media embeds    |
+                | `<meta>`, `<link>`                          | Head content    |
+
+
+                | You want...       | Use this instead...                                          |
+                | ----------------- | ------------------------------------------------------------ |
+                | Line breaks       | `\n` instead of `<br>` or `<p>`                              |
+                | Headings (`<h1>`) | Use bold: `<b>Heading</b>`                                   |
+                | Lists             | Manually format with bullets: `• Item 1\n• Item 2`           |
+                | Tables            | Use monospace + spacing: `<pre>Col1  Col2\nVal1  Val2</pre>` |
+                | Divs for layout   | Avoid — Telegram doesn’t support layout HTML                 |
+
                 
                 /no_think"""
                 followup_response = await client.chat.completions.create(
@@ -832,6 +860,7 @@ async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Call OpenAI API with the user's message and user_id
         response = await call_openai_api(instruction, user_id, model=MODEL)
         if "<" in response and ">" in response:
+            print(response)
             await update.message.reply_text(response,parse_mode=ParseMode.HTML)
         else:
             await update.message.reply_text(response)
