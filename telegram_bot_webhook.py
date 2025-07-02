@@ -614,7 +614,7 @@ Always use the appropriate tool for user requests. Be helpful and provide clear 
                 1. You are returning a summary to a telegram bot
                 2. Generate charts or tables if relevant
                 3. Generate in html format
-                4. Unsupported tags in telegram: <div>, <p>, <br>, <img>, <ul>
+                4. Unsupported tags in telegram: <div>, <p>, <br>, <img>, <ul> along with below tags
 
                 | Tag                                         | Description     |
                 | ------------------------------------------- | --------------- |
@@ -633,6 +633,7 @@ Always use the appropriate tool for user requests. Be helpful and provide clear 
                 | `<iframe>`, `<embed>`, `<video>`, `<audio>` | Media embeds    |
                 | `<meta>`, `<link>`                          | Head content    |
 
+                5. You can use the following tags in your response:
 
                 | You want...       | Use this instead...                                          |
                 | ----------------- | ------------------------------------------------------------ |
@@ -861,6 +862,13 @@ async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         response = await call_openai_api(instruction, user_id, model=MODEL)
         if "<" in response and ">" in response:
             print(response)
+            response = response.replace("<think>", "").replace("</think>", "").strip()
+            ### remove enclosing ```html``` tags if present
+            if response.startswith("```html"):
+                response = response[7:].strip()
+            if response.endswith("```"):
+                response = response[:-3].strip()
+            # Send as HTML message
             await update.message.reply_text(response,parse_mode=ParseMode.HTML)
         else:
             await update.message.reply_text(response)
