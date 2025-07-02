@@ -8,6 +8,8 @@ from datetime import datetime, timedelta, timezone
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
+from telegram.constants import ParseMode
+
 # New imports for webhook
 import logging
 from expenses_sqlite import ExpensesSQLite
@@ -611,6 +613,7 @@ Always use the appropriate tool for user requests. Be helpful and provide clear 
 
                 1. You are returning a summary to a telegram bot
                 2. Generate charts or tables if relevant
+                3. Generate in html format
                 
                 /no_think"""
                 followup_response = await client.chat.completions.create(
@@ -828,7 +831,10 @@ async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         # Call OpenAI API with the user's message and user_id
         response = await call_openai_api(instruction, user_id, model=MODEL)
-        await update.message.reply_text(response)
+        if "<" in response and ">" in response:
+            await update.message.reply_text(response,parse_mode=ParseMode.HTML)
+        else:
+            await update.message.reply_text(response)
     except Exception as e:
         await update.message.reply_text(f"Error: {e}")
 
