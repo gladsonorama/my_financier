@@ -216,7 +216,7 @@ class ExpensesSQLite:
         else:
             end_date = f"{year}-{month + 1:02d}-01"
             ## minus one day to include the last day of the month
-            end_date = pd.to_datetime(end_date) - pd.Timedelta(days=1).strftime('%Y-%m-%d')
+            end_date = (pd.to_datetime(end_date) - pd.Timedelta(days=1)).strftime('%Y-%m-%d')
         
         return self.get_expenses(start_date, end_date, user_id=user_id)
     
