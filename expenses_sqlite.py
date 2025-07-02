@@ -1,6 +1,6 @@
 import sqlite3
 import pandas as pd
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta,time
 from typing import Dict, List, Optional
 import os
 import tempfile
@@ -173,9 +173,11 @@ class ExpensesSQLite:
         
         if end_date:
             # Add one day to include the end date
-            end_date_plus = pd.to_datetime(end_date) #+ pd.Timedelta(days=1)
+            current_time = time(23,59,59)
+            end_date =  datetime.combine(pd.to_datetime(end_date).date(), current_time)
+            # end_date_plus = pd.to_datetime(end_date) #+ pd.Timedelta(days=1)
             query += " AND date <= ?"
-            params.append(end_date_plus.strftime('%Y-%m-%d'))
+            params.append(end_date)
         
         if category:
             normalized_category = self._normalize_category(category)
@@ -189,6 +191,7 @@ class ExpensesSQLite:
         query += " ORDER BY date DESC"
         
         with sqlite3.connect(self.db_path) as conn:
+            logger.info("Executing query: %s with params: %s", query, params)
             df = pd.read_sql_query(query, conn, params=params)
             if not df.empty:
                 df['date'] = pd.to_datetime(df['date'])
