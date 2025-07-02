@@ -1,12 +1,15 @@
 import sqlite3
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional
 import os
 import tempfile
 import logging
 
 logger = logging.getLogger(__name__)
+
+# Define IST timezone (GMT+5:30)
+IST = timezone(timedelta(hours=5, minutes=30))
 
 class ExpensesSQLite:
     def __init__(self, db_path: str = "expenses.db"):
@@ -71,6 +74,19 @@ class ExpensesSQLite:
             return "Miscellaneous"
         return category.strip().title()
     
+    def _get_current_time_ist(self) -> datetime:
+        """Get current time in IST (GMT+5:30)"""
+        return datetime.now(IST)
+    
+    def _format_ist_time(self, dt: datetime = None) -> str:
+        """Format datetime in IST timezone"""
+        if dt is None:
+            dt = self._get_current_time_ist()
+        elif dt.tzinfo is None:
+            # If no timezone info, assume it's UTC and convert to IST
+            dt = dt.replace(tzinfo=timezone.utc).astimezone(IST)
+        return dt.strftime('%Y-%m-%d %H:%M:%S')
+    
     # User Management
     def create_user(self, username: str, email: str = None) -> bool:
         """Create a new user"""
@@ -117,8 +133,10 @@ class ExpensesSQLite:
     def add_expense(self, amount: float, category: str, description: str, 
                    kakeibo_category: str = None, user_id: str = None):
         """Add a new expense to the database"""
+        current_time_ist = self._get_current_time_ist()
+        
         new_expense = {
-            'date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'date': self._format_ist_time(current_time_ist),
             'amount': amount,
             'category': self._normalize_category(category),
             'kakeibo_category': kakeibo_category or 'survival',
@@ -184,10 +202,10 @@ class ExpensesSQLite:
     
     def get_monthly_expenses(self, year: int = None, month: int = None, 
                            user_id: str = None) -> pd.DataFrame:
-        """Get expenses for a specific month"""
-        now = datetime.now()
-        year = year or now.year
-        month = month or now.month
+        """Get expenses for a specific month in IST"""
+        current_time_ist = self._get_current_time_ist()
+        year = year or current_time_ist.year
+        month = month or current_time_ist.month
         
         start_date = f"{year}-{month:02d}-01"
         if month == 12:
@@ -262,12 +280,16 @@ class ExpensesSQLite:
         return df.nlargest(limit, 'amount')
     
     def get_spending_trends(self, months: int = 6, user_id: str = None) -> Dict:
-        """Get monthly spending trends"""
-        end_date = datetime.now()
+        """Get monthly spending trends in IST"""
+        current_time_ist = self._get_current_time_ist()
         trends = {}
         
         for i in range(months):
-            month_date = datetime(end_date.year, end_date.month - i, 1) if end_date.month > i else datetime(end_date.year - 1, 12 - (i - end_date.month), 1)
+            if current_time_ist.month > i:
+                month_date = datetime(current_time_ist.year, current_time_ist.month - i, 1, tzinfo=IST)
+            else:
+                month_date = datetime(current_time_ist.year - 1, 12 - (i - current_time_ist.month), 1, tzinfo=IST)
+            
             df = self.get_monthly_expenses(month_date.year, month_date.month, user_id)
             
             month_key = month_date.strftime('%Y-%m')
@@ -325,24 +347,33 @@ class ExpensesSQLite:
         self.set_setting('backup_counter', '0')
     
     def get_last_backup_time(self) -> datetime:
-        """Get the last backup timestamp"""
+        """Get the last backup timestamp in IST"""
         timestamp_str = self.get_setting('last_backup_time')
         if timestamp_str:
-            return datetime.fromisoformat(timestamp_str)
+            # Parse ISO format and convert to IST if needed
+            dt = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(IST)
         return None
     
     def set_last_backup_time(self, timestamp: datetime = None):
-        """Set the last backup timestamp"""
+        """Set the last backup timestamp in IST"""
         if timestamp is None:
-            timestamp = datetime.now()
+            timestamp = self._get_current_time_ist()
+        elif timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=IST)
+        
+        # Store as ISO format with timezone info
         self.set_setting('last_backup_time', timestamp.isoformat())
     
     # Additional methods for S3 backup/restore
     def backup_to_file(self, backup_path=None) -> str:
         """Backup database to a file and return the file path"""
         if not backup_path:
-            # Create a temp file with timestamp
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            # Create a temp file with IST timestamp
+            ist_time = self._get_current_time_ist()
+            timestamp = ist_time.strftime('%Y%m%d_%H%M%S')
             backup_path = f"expenses_backup_{timestamp}.db"
         
         try:

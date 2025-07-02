@@ -3,10 +3,13 @@ import logging
 import boto3
 from botocore.exceptions import ClientError
 import tempfile
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import time
 
 logger = logging.getLogger(__name__)
+
+# Define IST timezone (GMT+5:30)
+IST = timezone(timedelta(hours=5, minutes=30))
 
 class S3Storage:
     def __init__(self, 
@@ -136,8 +139,22 @@ class S3Storage:
         logger.info("🔷🔷🔷 Found latest backup: %s", latest)
         return latest
     
+    def _get_current_time_ist(self) -> datetime:
+        """Get current time in IST (GMT+5:30)"""
+        return datetime.now(IST)
+    
+    def _parse_backup_timestamp(self, timestamp_str: str) -> datetime:
+        """Parse backup timestamp and convert to IST"""
+        try:
+            # Parse timestamp from filename format: YYYYMMDD_HHMMSS
+            dt = datetime.strptime(timestamp_str, '%Y%m%d_%H%M%S')
+            # Assume backup timestamps are in IST
+            return dt.replace(tzinfo=IST)
+        except ValueError:
+            raise ValueError(f"Could not parse timestamp: {timestamp_str}")
+    
     def cleanup_old_backups(self, prefix='expenses_backup_'):
-        """Clean up old backup files based on retention policy"""
+        """Clean up old backup files based on retention policy using IST"""
         try:
             # Get all backup files
             backups = self.list_files(prefix=prefix)
@@ -147,15 +164,19 @@ class S3Storage:
             
             # Parse backup files with timestamps
             backup_info = []
+            current_time_ist = self._get_current_time_ist()
+            
             for backup in backups:
                 try:
                     # Extract timestamp from filename: expenses_backup_YYYYMMDD_HHMMSS.db
                     timestamp_str = backup.replace(prefix, '').replace('.db', '')
-                    backup_time = datetime.strptime(timestamp_str, '%Y%m%d_%H%M%S')
+                    backup_time = self._parse_backup_timestamp(timestamp_str)
+                    age_timedelta = current_time_ist - backup_time
+                    
                     backup_info.append({
                         'name': backup,
                         'timestamp': backup_time,
-                        'age_days': (datetime.now() - backup_time).days
+                        'age_days': age_timedelta.days
                     })
                 except ValueError:
                     logger.warning("⚠️⚠️⚠️ Could not parse timestamp from backup: %s", backup)
@@ -201,34 +222,41 @@ class S3Storage:
             logger.error("❌❌❌ Error during backup cleanup: %s", str(e))
     
     def should_run_cleanup(self, db) -> bool:
-        """Check if it's time to run cleanup based on time interval"""
+        """Check if it's time to run cleanup based on time interval using IST"""
         last_cleanup_str = db.get_setting('last_cleanup_time')
         if not last_cleanup_str:
             return True
         
         try:
-            last_cleanup = datetime.fromisoformat(last_cleanup_str)
-            time_since_cleanup = datetime.now() - last_cleanup
+            # Parse cleanup time and convert to IST
+            last_cleanup = datetime.fromisoformat(last_cleanup_str.replace('Z', '+00:00'))
+            if last_cleanup.tzinfo is None:
+                last_cleanup = last_cleanup.replace(tzinfo=timezone.utc)
+            last_cleanup_ist = last_cleanup.astimezone(IST)
+            
+            current_time_ist = self._get_current_time_ist()
+            time_since_cleanup = current_time_ist - last_cleanup_ist
             return time_since_cleanup.total_seconds() >= (self.cleanup_frequency_minutes * 60)
         except:
             return True
     
     def backup_database(self, db_path, db_instance=None):
-        """Backup the database file to S3 with automatic cleanup"""
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        """Backup the database file to S3 with automatic cleanup using IST"""
+        ist_time = self._get_current_time_ist()
+        timestamp = ist_time.strftime('%Y%m%d_%H%M%S')
         object_name = f"expenses_backup_{timestamp}.db"
         
         success = self.upload_file(db_path, object_name)
         
         if success and db_instance:
-            # Update last backup time in database
-            db_instance.set_last_backup_time()
+            # Update last backup time in database with IST
+            db_instance.set_last_backup_time(ist_time)
             
             # Check if cleanup should run based on time interval
             if self.should_run_cleanup(db_instance):
                 logger.info("🔷🔷🔷 Running backup cleanup (time-based trigger)")
                 self.cleanup_old_backups()
-                db_instance.set_setting('last_cleanup_time', datetime.now().isoformat())
+                db_instance.set_setting('last_cleanup_time', ist_time.isoformat())
         
         return success
     
@@ -291,6 +319,28 @@ if __name__ == "__main__":
     backups = s3.list_files('expenses_backup_')
     logger.info("Existing backups: %s", backups)
     
+    ## get latest backup
+    latest_backup = s3.get_latest_backup('expenses_backup_')
+    
+    #load latest backup into sql lite
+    import sqlite3
+    if latest_backup:
+        restore_latest_database = s3.restore_latest_database('expenses.db')
+        if restore_latest_database:
+            conn = sqlite3.connect('expenses.db')
+            ## show current expenses
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM expenses")
+            expenses = cursor.fetchall()
+            for expense in expenses:
+                logger.info("Expense: %s", expense)
+            # logger.info("Current expenses in expenses.db: %s", expenses)
+            conn.close()
+            # os.remove(download_path)
+            logger.info("Restored latest backup to expenses.db")
+        else:
+            logger.error("Failed to download latest backup")
+
     # Backup current database
-    success = backup_db_to_s3()
-    logger.info("Backup result: %s", "Success" if success else "Failed")
+    # success = backup_db_to_s3()
+    # logger.info("Backup result: %s", "Success" if success else "Failed")

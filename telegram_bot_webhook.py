@@ -4,7 +4,7 @@ import ssl
 import httpx
 import requests, subprocess
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
@@ -81,13 +81,21 @@ backup_scheduler = None
 backup_lock = threading.Lock()
 pending_backup = False
 
+# Define IST timezone (GMT+5:30)
+IST = timezone(timedelta(hours=5, minutes=30))
+
+def get_current_time_ist() -> datetime:
+    """Get current time in IST (GMT+5:30)"""
+    return datetime.now(IST)
+
 def should_backup() -> bool:
-    """Check if it's time to backup based on database-stored timestamp"""
+    """Check if it's time to backup based on database-stored timestamp in IST"""
     last_backup = db.get_last_backup_time()
     if not last_backup:
         return True
     
-    time_since_backup = datetime.now() - last_backup
+    current_time_ist = get_current_time_ist()
+    time_since_backup = current_time_ist - last_backup
     return time_since_backup.total_seconds() >= BACKUP_INTERVAL
 
 def perform_backup_sync():
@@ -160,7 +168,7 @@ def exit_handler():
 atexit.register(exit_handler)
 
 # Log process restart detection and start backup scheduler
-startup_time = datetime.now()
+startup_time = get_current_time_ist()
 last_backup = db.get_last_backup_time()
 if last_backup:
     time_since_last_backup = startup_time - last_backup
@@ -392,7 +400,8 @@ async def execute_tool(tool_name: str, arguments: dict, user_id: str = None) -> 
         
         elif tool_name == "get_recent_expenses":
             days = arguments.get("days", 7)
-            end_date = datetime.now()
+            current_time_ist = get_current_time_ist()
+            end_date = current_time_ist
             start_date = end_date - timedelta(days=days)
             
             df = db.get_expenses(
@@ -711,25 +720,30 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     last_backup = db.get_last_backup_time()
     last_cleanup = db.get_setting('last_cleanup_time')
+    current_time_ist = get_current_time_ist()
     
-    status_msg = f"🤖 **System Status Report**\n\n"
+    status_msg = f"🤖 **System Status Report** (IST)\n\n"
     status_msg += f"📅 **Process Info:**\n"
-    status_msg += f"   • Started: {startup_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
-    status_msg += f"   • Uptime: {((datetime.now() - startup_time).total_seconds() // 60):.0f} minutes\n\n"
+    status_msg += f"   • Started: {startup_time.strftime('%Y-%m-%d %H:%M:%S IST')}\n"
+    status_msg += f"   • Current time: {current_time_ist.strftime('%Y-%m-%d %H:%M:%S IST')}\n"
+    status_msg += f"   • Uptime: {((current_time_ist - startup_time).total_seconds() // 60):.0f} minutes\n\n"
     
     status_msg += f"💾 **Backup Status:**\n"
     if last_backup:
-        minutes_ago = (datetime.now() - last_backup).total_seconds() // 60
-        status_msg += f"   • Last backup: {last_backup.strftime('%Y-%m-%d %H:%M:%S')}\n"
+        minutes_ago = (current_time_ist - last_backup).total_seconds() // 60
+        status_msg += f"   • Last backup: {last_backup.strftime('%Y-%m-%d %H:%M:%S IST')}\n"
         status_msg += f"   • Time ago: {int(minutes_ago)} minutes\n"
     else:
         status_msg += "   • Last backup: Never\n"
     
     status_msg += f"🧹 **Cleanup Status:**\n"
     if last_cleanup:
-        cleanup_time = datetime.fromisoformat(last_cleanup)
-        minutes_ago = (datetime.now() - cleanup_time).total_seconds() // 60
-        status_msg += f"   • Last cleanup: {cleanup_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+        cleanup_time = datetime.fromisoformat(last_cleanup.replace('Z', '+00:00'))
+        if cleanup_time.tzinfo is None:
+            cleanup_time = cleanup_time.replace(tzinfo=timezone.utc)
+        cleanup_time_ist = cleanup_time.astimezone(IST)
+        minutes_ago = (current_time_ist - cleanup_time_ist).total_seconds() // 60
+        status_msg += f"   • Last cleanup: {cleanup_time_ist.strftime('%Y-%m-%d %H:%M:%S IST')}\n"
         status_msg += f"   • Time ago: {int(minutes_ago)} minutes\n"
     else:
         status_msg += "   • Last cleanup: Never\n"
@@ -761,16 +775,19 @@ async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     try:
-        # Get recent expenses count and last activity
+        # Get recent expenses count and last activity (last 24h in IST)
+        current_time_ist = get_current_time_ist()
+        start_time_ist = current_time_ist - timedelta(hours=24)
+        
         recent_df = db.get_expenses(
-            start_date=(datetime.now() - timedelta(hours=24)).strftime('%Y-%m-%d'),
-            end_date=datetime.now().strftime('%Y-%m-%d')
+            start_date=start_time_ist.strftime('%Y-%m-%d'),
+            end_date=current_time_ist.strftime('%Y-%m-%d')
         )
         
         # Get user count
         users = db.list_users()
         
-        logs_msg = f"📊 **Activity Report (Last 24h)**\n\n"
+        logs_msg = f"📊 **Activity Report (Last 24h IST)**\n\n"
         logs_msg += f"👥 **Users:** {len(users)} total\n"
         logs_msg += f"💰 **Transactions:** {len(recent_df)} in last 24h\n"
         
@@ -785,6 +802,8 @@ async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 for cat, amount in top_categories.items():
                     logs_msg += f"   • {cat}: ₹{amount:.2f}\n"
         
+        logs_msg += f"\n🕒 **Current Time:** {current_time_ist.strftime('%Y-%m-%d %H:%M:%S IST')}"
+        
         await update.message.reply_text(logs_msg)
         
     except Exception as e:
@@ -793,7 +812,11 @@ async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     instruction = update.message.text
-    date = update.message.date.strftime("%Y-%m-%d")
+    # Convert message date to IST
+    message_time_utc = update.message.date
+    message_time_ist = message_time_utc.astimezone(IST)
+    date = message_time_ist.strftime("%Y-%m-%d")
+    
     username = update.message.from_user.username or f"user_{update.message.from_user.id}"
     user_id = str(update.message.from_user.id)
     
@@ -801,7 +824,7 @@ async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not db.get_user(user_id):
         db.create_user(user_id, f"{username}@telegram.com" if username else None)
     
-    instruction = f"{instruction}. Today's date is {date}. User: {username}"
+    instruction = f"{instruction}. Today's date is {date} (IST). User: {username}"
     try:
         # Call OpenAI API with the user's message and user_id
         response = await call_openai_api(instruction, user_id, model=MODEL)
