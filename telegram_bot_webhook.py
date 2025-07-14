@@ -594,7 +594,7 @@ Always use the appropriate tool for user requests. Be helpful and provide clear 
             for tool_call in response.choices[0].message.tool_calls:
                 function_name = tool_call.function.name
                 function_args = json.loads(tool_call.function.arguments)
-                
+                tool_args = function_args.copy()
                 # Execute the tool
                 if function_name == "add_expense":
                     generate_report = False
@@ -930,7 +930,7 @@ async def webhook_error_handler(update: object, context: ContextTypes.DEFAULT_TY
     import traceback
     logger.error(traceback.format_exc())
 
-def log_webhook_payload(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def log_webhook_payload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Log incoming webhook payload for debugging"""
     try:
         # Log the raw update object
@@ -953,9 +953,6 @@ def log_webhook_payload(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     # Create the Application
     app = Application.builder().token(BOT_TOKEN).build()
-    
-    # Add logging middleware for all updates
-    app.add_handler(MessageHandler(filters.ALL, log_webhook_payload), group=-1)
     
     # Add command handlers
     app.add_handler(CommandHandler("start", start))
