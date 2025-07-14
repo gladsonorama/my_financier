@@ -26,8 +26,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 # Set more verbose logging for debugging
-# logging.getLogger('telegram').setLevel(logging.DEBUG)
-# logging.getLogger('httpx').setLevel(logging.DEBUG)
+logging.getLogger('telegram').setLevel(logging.DEBUG)
+logging.getLogger('httpx').setLevel(logging.INFO)
 
 # Monkey patch httpx AsyncClient to disable SSL verification
 original_init = httpx.AsyncClient.__init__
@@ -600,7 +600,7 @@ Always use the appropriate tool for user requests. Be helpful and provide clear 
                     generate_report = False
                 
                 logger.info("🛠️🛠️🛠️ Executing tool: %s with args: %s", function_name, function_args)
-                tool_result = await execute_tool(function_name, function_args, user_id)
+                tool_result = await execute_tool(function_name, tool_args, user_id)
                 tool_results.append(tool_result)
             if generate_report:
                 
@@ -856,6 +856,10 @@ async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         # Call OpenAI API with the user's message and user_id
         response = await call_openai_api(instruction, user_id, model=MODEL)
+        
+        # Apply logging decorator to reply_text
+        reply_func = log_response_decorator(update.message.reply_text)
+        
         if "<" in response and ">" in response:
             print(response)
             response = response.replace("<think>", "").replace("</think>", "").strip()
@@ -865,11 +869,35 @@ async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if response.endswith("```"):
                 response = response[:-3].strip()
             # Send as HTML message
-            await update.message.reply_text(response,parse_mode=ParseMode.HTML)
+            await reply_func(response, parse_mode=ParseMode.HTML)
         else:
-            await update.message.reply_text(response)
+            await reply_func(response)
     except Exception as e:
-        await update.message.reply_text(f"Error: {e}")
+        reply_func = log_response_decorator(update.message.reply_text)
+        await reply_func(f"Error: {e}")
+
+# Override the reply_text method to log responses
+import functools
+
+def log_response_decorator(func):
+    @functools.wraps(func)
+    async def wrapper(*args, **kwargs):
+        try:
+            # Log the outgoing response
+            text = kwargs.get('text', args[0] if args else 'no_text')
+            parse_mode = kwargs.get('parse_mode', 'None')
+            logger.info("📤 HTTP RESPONSE: text=%s, parse_mode=%s", 
+                       text[:200] + "..." if len(str(text)) > 200 else text, 
+                       parse_mode)
+            
+            # Call the original function
+            result = await func(*args, **kwargs)
+            logger.info("✅ Response sent successfully")
+            return result
+        except Exception as e:
+            logger.error("❌ Error sending response: %s", e)
+            raise
+    return wrapper
 
 # def start_ollama_if_not_running():
 #     """Check if Ollama is running, start it if not"""
@@ -902,9 +930,32 @@ async def webhook_error_handler(update: object, context: ContextTypes.DEFAULT_TY
     import traceback
     logger.error(traceback.format_exc())
 
+def log_webhook_payload(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Log incoming webhook payload for debugging"""
+    try:
+        # Log the raw update object
+        logger.info("📥 WEBHOOK PAYLOAD: %s", update.to_dict())
+        
+        # Log specific details if available
+        if update.message:
+            logger.info("📧 MESSAGE: from_user=%s, text=%s, date=%s", 
+                       update.message.from_user.id if update.message.from_user else "unknown",
+                       update.message.text or "no_text",
+                       update.message.date)
+        
+        if update.callback_query:
+            logger.info("🔘 CALLBACK_QUERY: from_user=%s, data=%s", 
+                       update.callback_query.from_user.id if update.callback_query.from_user else "unknown",
+                       update.callback_query.data)
+    except Exception as e:
+        logger.error("❌ Error logging webhook payload: %s", e)
+
 def main():
     # Create the Application
     app = Application.builder().token(BOT_TOKEN).build()
+    
+    # Add logging middleware for all updates
+    app.add_handler(MessageHandler(filters.ALL, log_webhook_payload), group=-1)
     
     # Add command handlers
     app.add_handler(CommandHandler("start", start))
