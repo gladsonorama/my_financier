@@ -661,6 +661,13 @@ Always use the appropriate tool for user requests. Be helpful and provide clear 
         logger.error("❌❌❌ Error calling OpenAI API: %s", e)
         return f"Error calling OpenAI API: {e}"
 
+async def alive(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /alive command to check if bot is running"""
+    current_time_ist = get_current_time_ist()
+    uptime = (current_time_ist - startup_time).total_seconds() // 60
+    response = f"🤖 Bot is alive! Uptime: {uptime:.0f} minutes\nCurrent time (IST): {current_time_ist.strftime('%Y-%m-%d %H:%M:%S')}"
+    await update.message.reply_text(response)
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = """
 🤖 Welcome to your Kakeibo Finance Assistant!
@@ -956,6 +963,8 @@ def main():
     
     # Add command handlers
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("alive", alive))
+
     app.add_handler(CommandHandler("backup", backup_command))
     app.add_handler(CommandHandler("cleanup", cleanup_command))
     app.add_handler(CommandHandler("status", status_command))
