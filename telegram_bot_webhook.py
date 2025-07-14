@@ -661,6 +661,11 @@ Always use the appropriate tool for user requests. Be helpful and provide clear 
         logger.error("❌❌❌ Error calling OpenAI API: %s", e)
         return f"Error calling OpenAI API: {e}"
 
+async def be_alive(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /be_alive command to check if bot is running"""
+    # update.message.
+    await "DONE"
+
 async def alive(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /alive command to check if bot is running"""
     current_time_ist = get_current_time_ist()
@@ -964,7 +969,7 @@ def main():
     # Add command handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("alive", alive))
-
+    app.add_handler(CommandHandler("be_alive", be_alive))
     app.add_handler(CommandHandler("backup", backup_command))
     app.add_handler(CommandHandler("cleanup", cleanup_command))
     app.add_handler(CommandHandler("status", status_command))
