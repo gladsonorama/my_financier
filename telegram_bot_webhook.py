@@ -662,9 +662,11 @@ Always use the appropriate tool for user requests. Be helpful and provide clear 
         return f"Error calling OpenAI API: {e}"
 
 async def be_alive(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /be_alive command to check if bot is running"""
-    # update.message.
-    await "DONE"
+    """Handle /be_alive command to check if bot is running - silent response"""
+    # Just log that the command was received, don't send any response
+    logger.info("🔄 Received /be_alive command from user %s", 
+               update.message.from_user.id if update.message.from_user else "unknown")
+    # No await or return needed - just process silently
 
 async def alive(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /alive command to check if bot is running"""
