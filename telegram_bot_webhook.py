@@ -156,18 +156,13 @@ def stop_backup_scheduler():
     
     if backup_scheduler and backup_scheduler.is_alive():
         logger.info("🔷🔷🔷 Stopping backup scheduler...")
-        # Perform final backup
-        perform_backup_sync()
+        # Skip final backup on exit
 
 # Register backup function on exit
 def exit_handler():
-    """Perform final backup on exit"""
+    """Clean shutdown without backup"""
     stop_backup_scheduler()
-    if os.environ.get("S3_ENABLED", "false").lower() == "true":
-        logger.info("🔷🔷🔷 Performing final backup before exit...")
-        backup_db_to_s3(db_path)
-
-atexit.register(exit_handler)
+    logger.info("🔷🔷🔷 Clean shutdown completed")
 
 # Log process restart detection and start backup scheduler
 startup_time = get_current_time_ist()
@@ -609,6 +604,7 @@ Always use the appropriate tool for user requests. Be helpful and provide clear 
                 tool_results.append(tool_result)
             if generate_report:
                 
+                return "\n".join(tool_results)
                 system_msg_reports = """You are a helpful assistant that summarizes the results of the executed tools. Generate a concise report based on the tool outputs.
 
                 1. You are returning a summary to a telegram bot
