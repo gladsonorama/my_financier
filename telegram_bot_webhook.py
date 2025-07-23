@@ -414,7 +414,8 @@ async def execute_tool(tool_name: str, arguments: dict, user_id: str = None) -> 
             result = f"📊 Recent Expenses ({days} days):\nTotal: ₹{total:.2f}\n\n"
             
             # Latest transactions
-            latest = df.sort_values('date', ascending=False).head(5)
+            # latest = df.sort_values('date', ascending=False).head(5)
+            latest = df.sort_values('date', ascending=False)
             for _, row in latest.iterrows():
                 date_str = pd.to_datetime(row['date']).strftime('%m-%d')
                 result += f"• {date_str}: ₹{row['amount']:.2f} - {row['category']}\n"
