@@ -418,7 +418,7 @@ async def execute_tool(tool_name: str, arguments: dict, user_id: str = None) -> 
             latest = df.sort_values('date', ascending=False)
             for _, row in latest.iterrows():
                 date_str = pd.to_datetime(row['date']).strftime('%m-%d')
-                result += f"• {date_str}: ₹{row['amount']:.2f} - {row['category']}\n"
+                result += f"• {date_str}: ₹{row['amount']:.2f} - {row['description']} - Category: {row['category']}\n"
             response = result
         
         elif tool_name == "get_expense_by_category":
@@ -438,6 +438,7 @@ async def execute_tool(tool_name: str, arguments: dict, user_id: str = None) -> 
             
             # Recent transactions
             recent = df.sort_values('date', ascending=False).head(5)
+            recent = df.sort_values('date', ascending=False)
             for _, row in recent.iterrows():
                 date_str = pd.to_datetime(row['date']).strftime('%m-%d')
                 result += f"• {date_str}: ₹{row['amount']:.2f} - {row['description']}\n"
