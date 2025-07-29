@@ -20,7 +20,7 @@ For expense tracking:
     * Shopping: use this category for clothes, electronics, gifts, personal items
     * Travel: use this category for trips, vacations, travel expenses
     * Miscellaneous: use this category for anything that doesn't fit above categories
-- If you find a situation where an expense matches multiple categories, use the most specific one
+- If you find a situation where an expense matches multiple categories, use the most specific category that applies. DONT DOUBLE COUNT EXPENSES.
 - Kakeibo Categories:
   * survival: Basic needs (rent, groceries, utilities, healthcare)
   * optional: Wants and desires (entertainment, dining out, shopping)

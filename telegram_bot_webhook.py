@@ -590,7 +590,8 @@ async def execute_tool(tool_name: str, arguments: dict, user_id: str = None) -> 
             
             # Get the expense to edit
             expense_to_edit = matching_expenses.iloc[expense_index]
-            expense_id = expense_to_edit['id']
+            expense_id = int(expense_to_edit['id'])
+            
             
             # Prepare update parameters
             update_params = {}
