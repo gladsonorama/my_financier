@@ -19,7 +19,7 @@ import time
 import atexit
 import threading
 import asyncio
-
+import prompts
 # Configure logging
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
@@ -328,6 +328,29 @@ tools = [
                 "properties": {}
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "edit_expense",
+            "description": "Find and edit an existing expense. Can search by description, amount, category, or date to find the exact expense to modify.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "search_description": {"type": "string", "description": "Part of the description to search for the expense to edit"},
+                    "search_amount": {"type": "number", "description": "Amount to search for the expense to edit"},
+                    "search_category": {"type": "string", "description": "Category to search for the expense to edit"},
+                    "search_date": {"type": "string", "description": "Date (YYYY-MM-DD) to search for the expense to edit"},
+                    "new_amount": {"type": "number", "description": "New amount for the expense (optional)"},
+                    "new_category": {"type": "string", "description": "New category for the expense (optional)"},
+                    "new_kakeibo_category": {"type": "string", "description": "New kakeibo category (optional): survival, optional, culture, extra"},
+                    "new_description": {"type": "string", "description": "New description for the expense (optional)"},
+                    "new_date": {"type": "string", "description": "New date (YYYY-MM-DD) for the expense (optional)"},
+                    "expense_index": {"type": "integer", "description": "If multiple expenses found, specify which one to edit (1-based index)"}
+                },
+                "required": []
+            }
+        }
     }
 ]
 
@@ -530,6 +553,89 @@ async def execute_tool(tool_name: str, arguments: dict, user_id: str = None) -> 
             
             response = result
         
+        elif tool_name == "edit_expense":
+            # Search for expenses matching the criteria
+            search_criteria = {}
+            if arguments.get("search_description"):
+                search_criteria["description"] = arguments["search_description"]
+            if arguments.get("search_amount"):
+                search_criteria["amount"] = arguments["search_amount"]
+            if arguments.get("search_category"):
+                search_criteria["category"] = arguments["search_category"]
+            if arguments.get("search_date"):
+                search_criteria["date"] = arguments["search_date"]
+            
+            # Add user_id to search criteria
+            search_criteria["user_id"] = user_id
+            
+            # Find matching expenses
+            matching_expenses = db.find_expenses_by_criteria(**search_criteria, limit=5)
+            
+            if matching_expenses.empty:
+                return "❌ No expenses found matching your search criteria. Please provide more specific details like description, amount, category, or date."
+            
+            # If multiple expenses found, let user choose or use index
+            expense_index = arguments.get("expense_index", 1) - 1  # Convert to 0-based
+            
+            if len(matching_expenses) > 1 and expense_index >= len(matching_expenses):
+                response = f"🔍 Found {len(matching_expenses)} matching expenses:\n\n"
+                for i, (_, expense) in enumerate(matching_expenses.iterrows(), 1):
+                    date_str = expense['date'].strftime('%Y-%m-%d')
+                    response += f"{i}. {date_str}: ₹{expense['amount']:.2f} - {expense['category']} - {expense['description']}\n"
+                response += f"\nPlease specify which expense to edit by saying 'edit expense number X' where X is the number (1-{len(matching_expenses)})."
+                return response
+            
+            if expense_index >= len(matching_expenses) or expense_index < 0:
+                expense_index = 0  # Default to first match
+            
+            # Get the expense to edit
+            expense_to_edit = matching_expenses.iloc[expense_index]
+            expense_id = expense_to_edit['id']
+            
+            # Prepare update parameters
+            update_params = {}
+            if arguments.get("new_amount") is not None:
+                update_params["amount"] = arguments["new_amount"]
+            if arguments.get("new_category"):
+                update_params["category"] = arguments["new_category"]
+            if arguments.get("new_kakeibo_category"):
+                update_params["kakeibo_category"] = arguments["new_kakeibo_category"]
+            if arguments.get("new_description"):
+                update_params["description"] = arguments["new_description"]
+            if arguments.get("new_date"):
+                update_params["date"] = arguments["new_date"]
+            
+            if not update_params:
+                return "❌ No new values provided for updating. Please specify what you want to change (amount, category, description, etc.)."
+            
+            # Update the expense
+            success = db.update_expense(expense_id, **update_params)
+            
+            if success:
+                is_modification = True
+                
+                # Show before and after
+                response = "✅ Expense updated successfully!\n\n"
+                response += f"📅 Original: {expense_to_edit['date'].strftime('%Y-%m-%d')}: ₹{expense_to_edit['amount']:.2f} - {expense_to_edit['category']} - {expense_to_edit['description']}\n\n"
+                
+                # Show what was changed
+                changes = []
+                if "amount" in update_params:
+                    changes.append(f"Amount: ₹{expense_to_edit['amount']:.2f} → ₹{update_params['amount']:.2f}")
+                if "category" in update_params:
+                    changes.append(f"Category: {expense_to_edit['category']} → {update_params['category']}")
+                if "kakeibo_category" in update_params:
+                    changes.append(f"Kakeibo: {expense_to_edit['kakeibo_category']} → {update_params['kakeibo_category']}")
+                if "description" in update_params:
+                    changes.append(f"Description: {expense_to_edit['description']} → {update_params['description']}")
+                if "date" in update_params:
+                    changes.append(f"Date: {expense_to_edit['date'].strftime('%Y-%m-%d')} → {update_params['date']}")
+                
+                response += "🔄 Changes made:\n" + "\n".join(f"   • {change}" for change in changes)
+                return response
+            else:
+                return "❌ Failed to update expense. Please try again."
+        
         else:
             return f"Unknown tool: {tool_name}"
         
@@ -545,34 +651,7 @@ async def execute_tool(tool_name: str, arguments: dict, user_id: str = None) -> 
 async def call_openai_api(prompt: str, user_id: str = None, model: str = "llama3.2") -> str:
     """Call OpenAI API with tools and return the response"""
     try:
-        system = """
-You are a helpful finance assistant with access to expense tracking tools and Kakeibo budgeting method.
-
-For expense tracking:
-- When user mentions spending money, use add_expense tool
-- Extract amount, category, description, and kakeibo_category from user input
-- Categories are case-insensitive and will be normalized: Food, Transportation, Utilities, Entertainment, Healthcare, Education, Shopping, Travel, Dining, Groceries, Rent, Gifts, Donations, Subscriptions, Personal Care, Miscellaneous
-- Kakeibo Categories:
-  * survival: Basic needs (rent, groceries, utilities, healthcare)
-  * optional: Wants and desires (entertainment, dining out, shopping)
-  * culture: Self-improvement (books, courses, subscriptions)
-  * extra: Unexpected expenses (repairs, emergencies)
-
-For expense analysis:
-- All category analysis is case-insensitive (food, Food, FOOD are treated the same)
-- Use get_monthly_expenses for monthly summaries
-- Use get_category_summary for category analysis
-- Use get_kakeibo_summary for kakeibo category breakdown
-- Use get_kakeibo_balance_analysis for budget balance recommendations
-- Use get_recent_expenses for recent spending
-- Use get_top_expenses for highest expenses
-- Use get_spending_trends for monthly trends
-- Use get_expense_by_category for specific category analysis
-- Use normalize_categories if user wants to clean up existing data
-
-Always use the appropriate tool for user requests. Be helpful and provide clear responses.
-/no_think
-"""
+        system = prompts.get_system_prompt()
 
         logger.info("🔷🔷🔷 INSTRUCTION: %s 🔷🔷🔷", prompt)
         
@@ -1016,6 +1095,33 @@ def main():
     else:
         logger.warning("⚠️⚠️⚠️ S3 storage is disabled")
 
+async def call_llm(messages: list):
+
+    response = await client.chat.completions.create(
+        model=MODEL,
+        messages=messages,
+        tools=tools,
+        stream=False,
+        tool_choice="auto",
+        max_tokens=1000,
+        temperature=0.7
+    )
+    return response
+
 if __name__ == '__main__':
     logger.info("🚀🚀🚀 Starting webhook application...")
-    main()
+    # main()
+    ## local validate prompts
+    import sys
+    system = prompts.get_system_prompt()
+    content = sys.argv[1] if len(sys.argv) > 1 else "Test prompt"
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": content}
+    ]
+    response = asyncio.run(call_llm(messages))
+    logger.info("🔷🔷🔷 INSTRUCTION: %s 🔷🔷🔷", response)
+    for tool in response.choices[0].message.tool_calls:
+        logger.info("🔧🔧🔧 Tool call: %s with args: %s", tool.function.name, tool.function.arguments) 
+
+    # logger.info("📜 SYSTEM PROMPT: %s", system)

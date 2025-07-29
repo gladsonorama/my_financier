@@ -437,6 +437,115 @@ class ExpensesSQLite:
             
             conn.commit()
             logger.info("🔷🔷🔷 Normalized existing category data")
+    
+    def find_expenses_by_criteria(self, description: str = None, amount: float = None, 
+                                 category: str = None, date: str = None, 
+                                 user_id: str = None, limit: int = 10) -> pd.DataFrame:
+        """Find expenses matching specific criteria for editing"""
+        query = "SELECT id, date, amount, category, kakeibo_category, description, user_id FROM expenses WHERE 1=1"
+        params = []
+        
+        if user_id:
+            query += " AND user_id = ?"
+            params.append(user_id)
+        
+        if description:
+            query += " AND description LIKE ?"
+            params.append(f"%{description}%")
+        
+        if amount:
+            # Allow for small floating point differences
+            query += " AND ABS(amount - ?) < 0.01"
+            params.append(amount)
+        
+        if category:
+            normalized_category = self._normalize_category(category)
+            query += " AND category = ?"
+            params.append(normalized_category)
+        
+        if date:
+            query += " AND DATE(date) = ?"
+            params.append(date)
+        
+        query += " ORDER BY date DESC, id DESC"
+        
+        if limit:
+            query += f" LIMIT {limit}"
+        
+        with sqlite3.connect(self.db_path) as conn:
+            logger.info("Finding expenses with query: %s, params: %s", query, params)
+            df = pd.read_sql_query(query, conn, params=params)
+            if not df.empty:
+                df['date'] = pd.to_datetime(df['date'])
+                df['category'] = df['category'].apply(self._normalize_category)
+            return df
+    
+    def update_expense(self, expense_id: int, amount: float = None, category: str = None, 
+                      kakeibo_category: str = None, description: str = None, 
+                      date: str = None) -> bool:
+        """Update an existing expense by ID"""
+        try:
+            # First, get the current expense to verify it exists
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT id, date, amount, category, kakeibo_category, description, user_id FROM expenses WHERE id = ?",
+                    (expense_id,)
+                )
+                current_expense = cursor.fetchone()
+                
+                if not current_expense:
+                    logger.warning("Expense with ID %s not found", expense_id)
+                    return False
+                
+                # Build update query with only provided fields
+                update_fields = []
+                update_params = []
+                
+                if amount is not None:
+                    update_fields.append("amount = ?")
+                    update_params.append(amount)
+                
+                if category is not None:
+                    update_fields.append("category = ?")
+                    update_params.append(self._normalize_category(category))
+                
+                if kakeibo_category is not None:
+                    update_fields.append("kakeibo_category = ?")
+                    update_params.append(kakeibo_category)
+                
+                if description is not None:
+                    update_fields.append("description = ?")
+                    update_params.append(description)
+                
+                if date is not None:
+                    update_fields.append("date = ?")
+                    update_params.append(date)
+                
+                if not update_fields:
+                    logger.warning("No fields to update for expense ID %s", expense_id)
+                    return False
+                
+                # Add updated timestamp
+                update_fields.append("created_at = CURRENT_TIMESTAMP")
+                update_params.append(expense_id)
+                
+                update_query = f"UPDATE expenses SET {', '.join(update_fields)} WHERE id = ?"
+                
+                logger.info("Updating expense with query: %s, params: %s", update_query, update_params)
+                cursor.execute(update_query, update_params)
+                conn.commit()
+                
+                if cursor.rowcount > 0:
+                    logger.info("✅ Successfully updated expense ID %s", expense_id)
+                    return True
+                else:
+                    logger.warning("No rows updated for expense ID %s", expense_id)
+                    return False
+                
+        except Exception as e:
+            logger.error("❌ Error updating expense ID %s: %s", expense_id, str(e))
+            return False
 
 if __name__ == "__main__":
     db = ExpensesSQLite()
