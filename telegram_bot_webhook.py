@@ -1110,18 +1110,18 @@ async def call_llm(messages: list):
 
 if __name__ == '__main__':
     logger.info("🚀🚀🚀 Starting webhook application...")
-    # main()
+    main()
     ## local validate prompts
-    import sys
-    system = prompts.get_system_prompt()
-    content = sys.argv[1] if len(sys.argv) > 1 else "Test prompt"
-    messages = [
-        {"role": "system", "content": system},
-        {"role": "user", "content": content}
-    ]
-    response = asyncio.run(call_llm(messages))
-    logger.info("🔷🔷🔷 INSTRUCTION: %s 🔷🔷🔷", response)
-    for tool in response.choices[0].message.tool_calls:
-        logger.info("🔧🔧🔧 Tool call: %s with args: %s", tool.function.name, tool.function.arguments) 
+    # import sys
+    # system = prompts.get_system_prompt()
+    # content = sys.argv[1] if len(sys.argv) > 1 else "Test prompt"
+    # messages = [
+    #     {"role": "system", "content": system},
+    #     {"role": "user", "content": content}
+    # ]
+    # response = asyncio.run(call_llm(messages))
+    # logger.info("🔷🔷🔷 INSTRUCTION: %s 🔷🔷🔷", response)
+    # for tool in response.choices[0].message.tool_calls:
+    #     logger.info("🔧🔧🔧 Tool call: %s with args: %s", tool.function.name, tool.function.arguments) 
 
     # logger.info("📜 SYSTEM PROMPT: %s", system)
